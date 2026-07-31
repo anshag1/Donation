@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -39,7 +39,7 @@ def generate_receipt_for_donation(
     triggers it, so a crash midway can't leave a captured payment without a
     receipt number reserved. See docs/02-user-flows.md §2.6.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     fy = financial_year_for(now)
 
     receipt_number = receipt_repo.allocate_next_receipt_number(

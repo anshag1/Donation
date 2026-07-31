@@ -22,5 +22,5 @@ class AdminUserRole(Base, UUIDPKMixin):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    admin_user: Mapped["AdminUser"] = relationship(back_populates="role_links")
-    role: Mapped["Role"] = relationship()
+    admin_user: Mapped["AdminUser"] = relationship(back_populates="role_links")  # noqa: F821
+    role: Mapped["Role"] = relationship()  # noqa: F821

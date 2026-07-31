@@ -57,6 +57,53 @@ def send_receipt_email(
     return True
 
 
+def send_admin_invite_email(
+    settings: Settings, *, to_email: str, full_name: str, organization_name: str, invite_url: str
+) -> bool:
+    """Returns True if the email was actually dispatched to Resend. When
+    Resend isn't configured, the caller (admin/users.py) falls back to
+    surfacing `invite_url` directly in the API response to the super_admin
+    who created the account — the same "real no-op, not a swallowed
+    exception" pattern as `send_receipt_email` above.
+
+    Deliberately does NOT log `invite_url` itself: it embeds a raw,
+    single-use bearer token that's sufficient on its own to set that
+    account's password (including a freshly-created super_admin account)
+    via POST /auth/accept-invite. Application logs are routinely read by a
+    wider audience (log aggregation, SRE, support) than the API response,
+    which only reaches the super_admin who made the request — logging the
+    token would hand out an account-takeover credential to anyone with log
+    access, for as long as logs are retained (often well past the token's
+    7-day validity)."""
+    if not settings.resend_configured:
+        logger.info(
+            "RESEND_API_KEY not set — skipping real send. Would have emailed "
+            "an invite link to %s (%s).",
+            to_email,
+            full_name,
+        )
+        return False
+
+    resend.api_key = settings.resend_api_key
+    resend.Emails.send(
+        {
+            "from": settings.resend_from_email,
+            "to": [to_email],
+            "subject": f"You've been invited to {organization_name}'s donation platform",
+            "html": f"""
+            <div style="font-family: Inter, Arial, sans-serif; max-width: 480px; margin: 0 auto;">
+              <h2 style="color:#3730a3;">Welcome, {full_name}!</h2>
+              <p>You've been added as an admin for <strong>{organization_name}</strong>'s
+              donation management platform.</p>
+              <p><a href="{invite_url}" style="color:#3730a3;">Click here to set your password and sign in</a></p>
+              <p style="color:#64748b; font-size: 13px;">This link expires in 7 days.</p>
+            </div>
+            """,
+        }
+    )
+    return True
+
+
 def _render_email_html(
     *, donor_name: str, receipt_number: str, amount_display: str, organization_name: str
 ) -> str:

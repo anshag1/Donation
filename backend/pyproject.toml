@@ -4,11 +4,30 @@ version = "0.1.0"
 requires-python = ">=3.11"
 
 [tool.ruff]
-line-length = 100
+line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+# B008: FastAPI's dependency-injection idiom is `param: T = Depends(...)`,
+# frequently parameterized as `Depends(require_role(*ROLES))` — a factory
+# call that returns a fresh closure per route, not a shared mutable default.
+# B008 exists to catch actual mutable-default-arg bugs, which this isn't;
+# ignoring it matches FastAPI's own documented pattern rather than adding
+# `# noqa` to ~25 call sites that are all the same safe idiom.
+ignore = ["B008"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Header",
+    "fastapi.File",
+    "fastapi.Body",
+    "fastapi.Path",
+    "fastapi.Cookie",
+    "fastapi.Form",
+]
 
 [tool.mypy]
 python_version = "3.11"

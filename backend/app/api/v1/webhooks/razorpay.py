@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.deps import DbDep
 from app.services.webhook_service import process_webhook
-from app.worker.tasks import generate_receipt_and_email
+from app.worker.queue import enqueue_receipt_generation
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -33,5 +33,5 @@ async def razorpay_webhook(
         db, settings, raw_body=raw_body, signature=x_razorpay_signature
     )
     if donation_id_needing_receipt is not None:
-        background_tasks.add_task(generate_receipt_and_email, donation_id_needing_receipt)
+        enqueue_receipt_generation(background_tasks, settings, donation_id_needing_receipt)
     return {"data": {"received": True}, "error": None}

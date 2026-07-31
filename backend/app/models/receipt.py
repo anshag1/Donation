@@ -26,7 +26,7 @@ class Receipt(Base, UUIDPKMixin):
         DateTime(timezone=True), server_default="now()", nullable=False
     )
 
-    donation: Mapped["Donation"] = relationship(back_populates="receipt")
+    donation: Mapped["Donation"] = relationship(back_populates="receipt")  # noqa: F821
 
 
 class ReceiptCounter(Base):

@@ -19,7 +19,7 @@ docker compose up -d
 cd backend
 python -m venv .venv
 source .venv/Scripts/activate      # Windows Git Bash; use .venv/bin/activate on macOS/Linux
-pip install -r requirements.txt
+pip install -r requirements.txt    # or requirements-dev.txt to also get ruff/mypy (see §8.6)
 cp .env.example .env
 # Edit .env: set JWT_SECRET (python -c "import secrets; print(secrets.token_urlsafe(64))")
 # and, if the docker-compose port mapping differs, adjust DATABASE_URL's port.
@@ -81,6 +81,20 @@ Options: `--amount` (paise), `--full-name`, `--mobile`, `--email`, `--base-url`.
 
 This script requires `RAZORPAY_WEBHOOK_SECRET` to be set in `backend/.env` (any value works locally — it just needs to match between the script and the running server; `.env.example` ships with a placeholder).
 
+## 8.4b Testing the durable task queue (optional — Redis)
+
+Not needed by default: receipt generation runs in-process via FastAPI `BackgroundTasks` unless `REDIS_URL` is set. To exercise the durable RQ+Redis path instead:
+
+```bash
+docker compose --profile durable-queue up -d     # starts Redis on host port 6380
+# In backend/.env: REDIS_URL=redis://localhost:6380/0
+# Terminal 3 — worker process
+cd backend && source .venv/Scripts/activate
+python -m scripts.worker
+```
+
+Then run `python -m scripts.simulate_webhook` as normal (§8.4) — the receipt job is now enqueued to Redis and processed by the worker process instead of in-process.
+
 ## 8.5 Testing against real Razorpay (test mode)
 
 Once you have a [Razorpay test-mode account](https://dashboard.razorpay.com/):
@@ -99,6 +113,12 @@ python -m pytest -v
 
 Tests run against the separate `donation_test` database (created automatically by `infra/init-test-db.sql` when `docker compose up` first initializes the Postgres volume). They pass with no Razorpay/Resend credentials at all — `payment_service.create_razorpay_order` is monkeypatched in the integration test, and the webhook/PDF/receipt-numbering paths are exercised directly against real Postgres.
 
+**Lint/typecheck** (needs `pip install -r requirements-dev.txt`, matches CI):
+```bash
+ruff check app tests scripts   # hard gate — must be clean
+mypy app                       # advisory only — see docs/06-deployment-security.md for why
+```
+
 ## 8.7 Common issues
 
 | Symptom | Fix |
@@ -107,3 +127,4 @@ Tests run against the separate `donation_test` database (created automatically b
 | `email-validator is not installed` on backend startup | `pip install -r requirements.txt` again — this is a `pydantic[email]` extra required by `EmailStr` fields. |
 | Frontend shows a "Razorpay is not configured" toast on submit | Expected in local-first mode — see §8.4 to test the rest of the pipeline without real keys. |
 | Backend won't start: "port already in use" | Something else (or a previous `uvicorn` you forgot to stop) is bound to 8000. Find and stop it, or run on a different `--port` (and update `frontend/.env.local`'s `NEXT_PUBLIC_API_BASE_URL` to match). |
+| API responses look stale / a route you just added 404s even though the code is definitely there | An **old** `uvicorn` process from an earlier session may still be running and holding port 8000 alongside (or instead of) your current one — Windows can end up with two processes both showing as listening on the same port. Check `Get-NetTCPConnection -LocalPort 8000` (PowerShell) for more than one PID, and kill the older one (check `Get-Process -Id <pid> | Select StartTime`) before assuming the code itself is broken. Hit for real during the Milestone 7 hardening pass after a session was interrupted and restarted. |

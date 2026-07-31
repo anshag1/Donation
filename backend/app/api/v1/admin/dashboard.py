@@ -1,4 +1,4 @@
-from datetime import datetime, time, timedelta, timezone
+from datetime import UTC, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -17,7 +17,7 @@ ALL_AUTHENTICATED_ROLES = (SUPER_ADMIN, ADMIN, TREASURER, COORDINATOR, VIEWER)
 
 
 def _start_of_day(now: datetime) -> datetime:
-    return datetime.combine(now.date(), time.min, tzinfo=timezone.utc)
+    return datetime.combine(now.date(), time.min, tzinfo=UTC)
 
 
 @router.get("/summary", response_model=ApiResponse[DashboardSummary])
@@ -25,7 +25,7 @@ def get_summary(
     db: Session = DbDep,
     current_admin: CurrentAdmin = Depends(require_role(*ALL_AUTHENTICATED_ROLES)),
 ) -> ApiResponse[DashboardSummary]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     today_start = _start_of_day(now)
     week_start = today_start - timedelta(days=today_start.weekday())
     month_start = today_start.replace(day=1)

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -13,10 +13,61 @@ import { adminApiClient } from "@/lib/auth";
 import { ApiError } from "@/lib/api-client";
 import type { Organization, OrganizationUpdateInput } from "@/types/api";
 
+function AssetUploadLink({
+  kind,
+  uploading,
+  onSelect,
+}: {
+  kind: "logo" | "signature";
+  uploading: "logo" | "signature" | null;
+  onSelect: (kind: "logo" | "signature", e: React.ChangeEvent<HTMLInputElement>) => void;
+}) {
+  const inputId = `${kind}_upload`;
+  const isUploading = uploading === kind;
+  return (
+    <div>
+      <Label
+        htmlFor={inputId}
+        className="mt-1 inline-flex cursor-pointer items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+      >
+        {isUploading ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
+        Or upload an image instead
+      </Label>
+      <input
+        id={inputId}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        className="hidden"
+        disabled={uploading !== null}
+        onChange={(e) => onSelect(kind, e)}
+      />
+    </div>
+  );
+}
+
 function SettingsPageInner() {
   const [org, setOrg] = useState<Organization | null>(null);
   const [loading, setLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [uploadingAsset, setUploadingAsset] = useState<"logo" | "signature" | null>(null);
+
+  async function onAssetFileSelected(kind: "logo" | "signature", e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploadingAsset(kind);
+    try {
+      const updated = await adminApiClient.upload<Organization>(`/api/v1/admin/organization/${kind}`, file);
+      setOrg(updated);
+      toast.success(kind === "logo" ? "Logo uploaded" : "Signature uploaded");
+    } catch (error) {
+      toast.error("Upload failed", {
+        description: error instanceof ApiError ? error.message : "Please try again.",
+      });
+    } finally {
+      setUploadingAsset(null);
+    }
+  }
 
   useEffect(() => {
     adminApiClient
@@ -122,6 +173,18 @@ function SettingsPageInner() {
                 value={org.logo_url ?? ""}
                 onChange={(e) => setOrg({ ...org, logo_url: e.target.value })}
               />
+              <AssetUploadLink kind="logo" uploading={uploadingAsset} onSelect={onAssetFileSelected} />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="signature_image_url">
+                Signature image URL <span className="font-normal text-muted-foreground">(optional)</span>
+              </Label>
+              <Input
+                id="signature_image_url"
+                value={org.signature_image_url ?? ""}
+                onChange={(e) => setOrg({ ...org, signature_image_url: e.target.value })}
+              />
+              <AssetUploadLink kind="signature" uploading={uploadingAsset} onSelect={onAssetFileSelected} />
             </div>
             <Button type="submit" disabled={isSubmitting}>
               {isSubmitting && <Loader2 className="animate-spin" />}

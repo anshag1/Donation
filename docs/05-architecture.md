@@ -66,7 +66,7 @@ Models (SQLAlchemy ORM models)
 - **Services** are plain Python classes/functions, framework-agnostic — testable without spinning up FastAPI. This is where "verify webhook signature," "allocate receipt number," "render PDF" live.
 - **Repositories** are the only layer that touches `Session`/SQL. Every repository method takes `organization_id` as an explicit, non-optional parameter (never inferred implicitly) — this is the primary defense against cross-tenant data leaks.
 - **Dependency Injection**: FastAPI `Depends()` provides `db: Session`, `current_admin: AdminUser` (with `.organization_id`, `.roles`), and `current_org` (resolved from JWT for admin routes, from event/org slug for public routes).
-- **Background work**: FastAPI `BackgroundTasks` for v1 (receipt PDF + email are dispatched after the webhook responds). If donation volume grows enough that in-process background tasks risk being dropped on deploy/restart, promote to a durable queue (Celery/RQ + Redis, or a Supabase Edge Function/cron) — flagged in the roadmap, not built prematurely.
+- **Background work**: `app/worker/queue.py` chooses between FastAPI `BackgroundTasks` (default — receipt PDF + email dispatched in-process after the webhook responds) and a durable RQ+Redis queue (`app/worker/rq_queue.py`, worker process at `scripts/worker.py`) when `REDIS_URL` is configured — same adapter pattern as storage/email, same call site either way. Local dev doesn't need Redis at all unless exercising this path (`docker compose --profile durable-queue up -d`).
 - **Config**: `pydantic-settings`, all secrets from environment variables, validated at startup (fail fast if a required secret is missing).
 
 ## 5.3 Frontend Architecture (Next.js App Router)
@@ -90,61 +90,75 @@ Both route groups below are built: `(public)` (donor-facing, Server Components, 
 ```
 backend/
 ├── alembic/
-│   ├── versions/                     ✅ 0001 initial schema, 0002 revoked_refresh_tokens
+│   ├── versions/                     ✅ initial schema, revoked_refresh_tokens, admin-user hardening
+│   │                                    (2FA secret, lockout, invite token columns)
 │   └── env.py                        ✅
-├── scripts/                          ✅ seed.py, simulate_webhook.py — see note below
+├── scripts/                          ✅ seed.py, simulate_webhook.py, worker.py — see note below
 ├── app/
 │   ├── main.py                       ✅ FastAPI app, CORS, security headers, exception handlers
 │   ├── config.py                     ✅ pydantic-settings, fail-fast on missing required vars
 │   ├── database.py                   ✅ engine, session factory
 │   ├── deps.py                       ✅ get_db, get_current_admin, get_public_organization
 │   │
-│   ├── models/                       ✅ all 12 tables from docs/03-database-schema.md
-│   │   ├── organization.py, admin_user.py, admin_user_role.py, role.py,
+│   ├── models/                       ✅ all tables from docs/03-database-schema.md
+│   │   ├── organization.py, admin_user.py (+ 2FA/lockout/invite columns), admin_user_role.py, role.py,
 │   │   ├── donor.py, event.py, donation.py, payment.py,
 │   │   └── receipt.py (+ ReceiptCounter), audit_log.py, webhook_event.py, revoked_token.py
 │   │
-│   ├── schemas/                      ✅ auth.py, common.py, donation.py (incl. DonorInput), event.py,
-│   │                                    donor.py, dashboard.py, admin_user.py, audit_log.py, organization.py
+│   ├── schemas/                      ✅ auth.py (incl. 2FA/login-challenge schemas), common.py,
+│   │                                    donation.py (incl. DonorInput), event.py, donor.py, dashboard.py,
+│   │                                    admin_user.py (incl. AcceptInviteRequest), audit_log.py, organization.py
 │   │
-│   ├── repositories/                 ✅ donation_repo, donor_repo, event_repo, receipt_repo,
-│   │                                    admin_user_repo, audit_log_repo, organization_repo, revoked_token_repo
+│   ├── repositories/                 ✅ donation_repo (+ report aggregate queries), donor_repo, event_repo,
+│   │                                    receipt_repo, admin_user_repo (+ invite-token + lockout helpers),
+│   │                                    audit_log_repo, organization_repo, revoked_token_repo
 │   │
 │   ├── services/                     ✅ donation_service, payment_service (Razorpay),
-│   │   │                                webhook_service, receipt_service, auth_service, audit_service,
-│   │   │                                email_service (Resend), storage_service (Local/R2/Supabase —
-│   │   │                                  R2 is this deployment's chosen backend, untested against a
-│   │   │                                  real bucket; see docs/09-session-handoff.md),
+│   │   │                                webhook_service, receipt_service, auth_service (+ 2FA login flow),
+│   │   │                                totp_service (pyotp + QR generation), audit_service,
+│   │   │                                email_service (Resend, incl. invite emails),
+│   │   │                                storage_service (Local/R2/Supabase — R2 is this deployment's
+│   │   │                                  chosen backend, untested against a real bucket; see
+│   │   │                                  docs/09-session-handoff.md),
 │   │   │                                amount_in_words.py, format_utils.py
-│   │   ├── pdf/receipt_pdf.py         ✅ ReportLab template
-│   │   └── pdf/report_pdf.py          ○ summary reports (with export_service.py) — CSV export ✅ lives in the reports router directly, no separate service needed for that
+│   │   └── pdf/receipt_pdf.py, pdf/summary_pdf.py   ✅ ReportLab templates (receipt + event/monthly/yearly
+│   │                                                   summary reports) — CSV/XLSX export live in the
+│   │                                                   reports router directly, no separate service needed
 │   │
 │   ├── api/v1/
 │   │   ├── router.py                 ✅
-│   │   ├── public/events.py, donations.py, receipts.py   ✅
+│   │   ├── public/events.py, donations.py, receipts.py, assets.py   ✅ (assets.py: banner/logo/signature
+│   │   │                                                                 serving, prefix-allowlisted)
 │   │   ├── webhooks/razorpay.py       ✅
 │   │   └── admin/
-│   │       ├── auth.py               ✅ login / refresh / logout / me
-│   │       └── dashboard.py, donations.py, donors.py, events.py,
-│   │           reports.py, users.py, audit_logs.py, organization.py   ✅ all built
+│   │       ├── auth.py               ✅ login / 2FA login-challenge / refresh / logout / me / 2FA setup
+│   │       │                            + enable + disable / accept-invite
+│   │       └── dashboard.py, donations.py, donors.py, events.py (+ banner upload),
+│   │           reports.py (+ xlsx/summary.pdf), users.py (+ invite flow),
+│   │           audit_logs.py, organization.py (+ logo/signature upload)   ✅ all built
 │   │
 │   ├── core/
-│   │   ├── security.py               ✅ JWT (numeric iat/exp!) + bcrypt
+│   │   ├── security.py               ✅ JWT (numeric iat/exp!) + bcrypt + receipt-download/mfa-pending tokens
 │   │   ├── rbac.py                   ✅ require_role(*roles) dependency
-│   │   ├── rate_limit.py             ✅ slowapi
+│   │   ├── rate_limit.py             ✅ slowapi (per-IP)
+│   │   ├── identity_rate_limit.py    ✅ per-identity (mobile number) sliding-window limiter
+│   │   ├── file_validation.py        ✅ magic-byte image validation for uploads
 │   │   └── exceptions.py             ✅ AppError hierarchy -> HTTP envelope
 │   │
-│   └── worker/tasks.py               ✅ generate_receipt_and_email — own DB session,
-│                                          dispatched via FastAPI BackgroundTasks from the webhook route
+│   └── worker/
+│       ├── tasks.py                  ✅ generate_receipt_and_email — own DB session
+│       ├── queue.py                  ✅ dispatch adapter: BackgroundTasks (default) or RQ+Redis
+│       └── rq_queue.py               ✅ RQ connection/queue, only imported when REDIS_URL is set
 │
 ├── tests/
-│   ├── unit/                         ✅ webhook signature, receipt numbering (incl. concurrency), PDF render
-│   └── integration/                  ✅ donation->webhook->receipt flow, auth/audit flow,
-│                                          admin-endpoint security sweep (RBAC + cross-org isolation) —
-│                                          75 tests total
+│   ├── unit/                         ✅ webhook signature, receipt numbering (incl. concurrency), PDF render,
+│   │                                    identity rate limiter, task-queue dispatch
+│   └── integration/                  ✅ donation->webhook->receipt flow, auth/audit/lockout flow, 2FA flow,
+│                                          admin invite flow, image upload, reports (xlsx/pdf), admin-endpoint
+│                                          security sweep (RBAC + cross-org isolation) — 121 tests total
 │
-├── var/receipts/                     local-dev-only PDF storage (gitignored)
-├── alembic.ini, pyproject.toml, requirements.txt
+├── var/receipts/                     local-dev-only PDF/image storage (gitignored)
+├── alembic.ini, pyproject.toml, requirements.txt, requirements-dev.txt
 ├── .env.example, Dockerfile, .dockerignore
 ```
 
@@ -166,22 +180,25 @@ frontend/
 │   │   │   │   │   ├── page.tsx                   ✅ event donation form (SSR event fetch)
 │   │   │   │   │   └── not-found.tsx              ✅ styled 404 for expired/bad event links
 │   │   │   │   └── confirmation/[donationId]/page.tsx  ✅ polls status, shows receipt
-│   │   │   └── events/[eventSlug]/page.tsx         ○ standalone public event details page (covered for now by the donation form itself showing the event banner/description inline)
+│   │   │   └── events/[eventSlug]/{page.tsx,not-found.tsx}   ✅ standalone public event details page
 │   │   │
 │   │   ├── (admin)/                                ✅ all built
 │   │   │   └── admin/
 │   │   │       ├── layout.tsx                      ✅ AuthProvider wrapper (shared by login + protected pages)
-│   │   │       ├── login/page.tsx                  ✅
+│   │   │       ├── login/page.tsx                  ✅ two-step (password, then TOTP challenge if enabled)
+│   │   │       ├── accept-invite/page.tsx          ✅ public — new admin sets their own password from an
+│   │   │       │                                       emailed/shared token
 │   │   │       └── (protected)/
 │   │   │           ├── layout.tsx                  ✅ AdminGuard + AdminSidebar shell
 │   │   │           ├── page.tsx                    ✅ dashboard home (KPIs + recent donations)
 │   │   │           ├── donations/{page.tsx,[id]/page.tsx}  ✅ list w/ filters, detail w/ resend+duplicate
 │   │   │           ├── donors/{page.tsx,[id]/page.tsx}     ✅
-│   │   │           ├── events/{page.tsx,new/,[id]/edit/}   ✅ list+create+edit+delete
-│   │   │           ├── reports/page.tsx            ✅ CSV export with filters
-│   │   │           ├── users/page.tsx              ✅ create/edit roles/toggle active
+│   │   │           ├── events/{page.tsx,new/,[id]/edit/}   ✅ list+create+edit+delete+banner upload
+│   │   │           ├── reports/page.tsx            ✅ CSV/XLSX export + event/monthly/yearly summary PDF
+│   │   │           ├── users/page.tsx              ✅ create (email-invite)/edit roles/toggle active
 │   │   │           ├── audit-logs/page.tsx         ✅
-│   │   │           └── settings/page.tsx           ✅ org profile fields
+│   │   │           ├── settings/page.tsx           ✅ org profile fields + logo/signature upload
+│   │   │           └── account/page.tsx            ✅ any role — 2FA enrollment/disable (QR + manual secret)
 │   │   │
 │   │   ├── layout.tsx                              ✅ root layout, ThemeProvider, Toaster
 │   │   ├── page.tsx                                ✅ redirects "/" -> "/donate"
@@ -191,14 +208,16 @@ frontend/
 │   │   ├── ui/                                     ✅ shadcn/ui primitives (incl. table, dialog, alert-dialog, switch)
 │   │   ├── donation/                               ✅ DonationForm, AmountPicker, EventBanner, PaymentStatusPoller
 │   │   ├── theme-provider.tsx                       ✅ next-themes wrapper
-│   │   └── admin/                                  ✅ AuthProvider, AdminGuard (+ RequireRole), AdminSidebar,
-│   │                                                    KpiCard, Pagination, EventForm, UserFormDialog
+│   │   └── admin/                                  ✅ AuthProvider (+ 2FA login-challenge state), AdminGuard
+│   │                                                    (+ RequireRole), AdminSidebar, KpiCard, Pagination,
+│   │                                                    EventForm (+ banner upload), UserFormDialog (+ invite UI)
 │   │
 │   ├── lib/
 │   │   ├── api-client.ts                  ✅ {data,error}-envelope fetch wrapper, cache:"no-store" + credentials:"include" default
 │   │   ├── razorpay.ts                    ✅ Checkout script loader/invoker (client-only)
 │   │   ├── format.ts                      ✅ currency/date formatting
-│   │   └── auth.ts                        ✅ token storage/attach + refresh-on-401 + blob download helper (native JWT, not Better Auth)
+│   │   └── auth.ts                        ✅ token storage/attach + refresh-on-401 + blob-download + multipart-upload
+│   │                                          helpers, 2FA (setup/enable/disable/verify-login) + accept-invite calls
 │   │
 │   ├── hooks/
 │   │   └── use-donation-status-poll.ts    ✅ (React Query not introduced — see §5.3 deviation note; admin pages use plain fetch-in-effect, which was enough for this pass's data volume)
@@ -207,8 +226,10 @@ frontend/
 │       └── api.ts                          ✅ hand-maintained, public + admin types (see §5.3 deviation note)
 │
 ├── public/
-├── tailwind.config.ts / next.config.ts
+├── tailwind.config.ts / next.config.ts (output: "standalone")
 ├── .env.example / .env.local
+├── Dockerfile, .dockerignore              ✅ multi-stage, standalone output — not the deploy path
+│                                              (Cloudflare Pages), a verified local-container fallback
 └── package.json
 ```
 
@@ -218,15 +239,14 @@ frontend/
 
 ```
 donation-platform/
-├── frontend/            # Next.js app
-├── backend/             # FastAPI app
+├── frontend/            # Next.js app (incl. its own Dockerfile)
+├── backend/             # FastAPI app (incl. its own Dockerfile)
 ├── docs/                # this documentation set
-├── infra/               # IaC snippets, Dockerfiles, render.yaml / railway.json
+├── infra/               # local Postgres init scripts
 ├── .github/
 │   └── workflows/
-│       ├── frontend-ci.yml
-│       ├── backend-ci.yml
-│       └── deploy.yml
+│       └── ci.yml       # ✅ built — backend job (ruff/mypy/alembic/pytest) + frontend job (lint/typecheck/build)
+│                           deploy automation (staging promotion, Render/Cloudflare Pages hooks) not yet added
 ├── .gitignore
 └── README.md
 ```
@@ -242,7 +262,7 @@ Commit convention: **Conventional Commits** (`feat:`, `fix:`, `chore:`, `docs:`,
 ## 5.6 Coding Standards & Conventions
 
 ### Python / Backend
-- Formatter/linter: `ruff` (format + lint), `mypy` in strict mode for `app/services` and `app/repositories` at minimum.
+- Formatter/linter: `ruff` — wired into CI as a hard gate (`.github/workflows/ci.yml`), fully clean against the whole codebase (`line-length = 120`, `B008` ignored since it conflicts with FastAPI's `Depends(require_role(...))` idiom — see `pyproject.toml` for the rationale). `mypy --strict` is also wired into CI but **advisory only** for now — the codebase has ~50 pre-existing strict-mode violations (SQLAlchemy relationship forward-refs, missing third-party stubs) predating CI; tracked as a known gap in [06-deployment-security.md](06-deployment-security.md), not silently ignored.
 - Naming: `snake_case` for functions/variables, `PascalCase` for classes, modules named after the aggregate they own (`donation_service.py`, not `service2.py`).
 - Every Pydantic schema explicitly separates `Create`/`Update`/`Read` variants — never reuse an ORM model as a response schema directly.
 - No bare `except:`; always catch specific exceptions and re-raise as a typed app exception (`app.core.exceptions`) mapped to an HTTP status in one place.

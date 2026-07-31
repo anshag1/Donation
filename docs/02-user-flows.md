@@ -101,11 +101,11 @@ sequenceDiagram
 **Key rules (as implemented):**
 - JWT claims: `sub` (admin_user_id), `org_id`, `roles[]`, `type` (`access`|`refresh`), `iat`/`exp` as numeric Unix timestamps, `jti`. Encoded/decoded in `app/core/security.py`.
 - The refresh token is delivered as an `httpOnly`, `SameSite=Lax` cookie scoped to `/api/v1/auth` — never readable from JS, never sent to unrelated routes.
-- Refresh rotates the token on every use (`auth_service.refresh`). **Known limitation**: there is no server-side revocation list keyed by `jti` yet, so a stolen refresh token remains valid until its natural 7-day expiry even after rotation — tracked in [06-deployment-security.md](06-deployment-security.md) as a hardening follow-up, not silently promised as done.
+- Refresh rotates the token on every use (`auth_service.refresh`) **and revokes the exchanged token** (`revoked_refresh_tokens`, keyed by `jti`) — a stolen-but-not-yet-used refresh token stops working the moment the legitimate client refreshes, closing the replay window an earlier draft of this doc flagged as an open gap.
 - CSRF: admin state-changing requests authenticate via the `Authorization: Bearer` header (not an ambient cookie), which is inherently immune to classic CSRF — a cross-site form/script can't read `localStorage`/JS-held tokens to attach that header. The refresh cookie itself is `SameSite=Lax`, which blocks it from being sent on cross-site POSTs.
 - Every protected route uses `require_role(*roles)` (`app/core/rbac.py`), which depends on `get_current_admin` (`app/deps.py`) — this is the only place `organization_id` is extracted from a request for admin routes, and it always comes from the verified JWT, never from the request body/query.
-- Public donor-facing endpoints are unauthenticated by design but rate-limited (`POST /donations/initiate`: 10/min/IP via `slowapi`).
-- 2FA is designed for (`admin_users.two_factor_enabled` column exists) but not yet implemented — roadmap item.
+- Public donor-facing endpoints are unauthenticated by design but rate-limited (`POST /donations/initiate`: 10/min/IP via `slowapi`, **plus** 10/hour per donor mobile number via a separate in-memory limiter — independent of IP, closing the gap where the same mobile number could otherwise be hammered from rotating IPs).
+- **2FA (TOTP) is implemented**: `POST /auth/2fa/setup` → `/2fa/enable` turns it on for an account; `POST /auth/login` then returns `{mfa_required: true, mfa_token}` instead of tokens, and `POST /auth/login/verify-2fa` (`{mfa_token, code}`) completes the login. 5 consecutive failed logins (password or TOTP code) lock the account for 15 minutes.
 
 ## 2.4 Payment Flow (Detail)
 

@@ -2,7 +2,7 @@
 
 A production-ready, multi-tenant-ready SaaS platform for managing charitable donations, automated receipt generation, and event-based fundraising.
 
-**Status**: Foundations, the full donor-facing donation flow, receipt generation, and the admin dashboard (dashboard KPIs, events/donations/donors, users & roles, audit log, org settings, CSV export) are implemented, tested (75 backend tests, incl. a dedicated RBAC + cross-org-isolation security sweep), and verified end-to-end in a real browser (Roadmap Milestones 0–5). Not yet built: XLSX/PDF report formats, 2FA, real image upload for banners/logos, and production deployment. See [docs/07-roadmap.md](docs/07-roadmap.md) for the full done-vs-planned breakdown.
+**Status**: Foundations, the full donor-facing donation flow, receipt generation, the full admin dashboard, and a complete security/feature hardening pass (2FA, account lockout, per-identity rate limiting, signed receipt-download tokens, real image upload, email-invite for new admins, XLSX/PDF reports, an optional durable task queue, CI) are all implemented, tested (121 backend tests, incl. a dedicated RBAC + cross-org-isolation security sweep and an independent adversarial security review), and verified end-to-end in a real browser (Roadmap Milestones 0–5 and 7). Not yet built: production deployment (Milestone 6 — nothing is connected/live yet) and dependency vulnerability scanning in CI. See [docs/07-roadmap.md](docs/07-roadmap.md) for the full done-vs-planned breakdown.
 
 **Picking this up fresh (new session, new person)?** Read [docs/09-session-handoff.md](docs/09-session-handoff.md) first — it's a complete context-recovery briefing (decisions made, bugs found and fixed, what's real vs. planned).
 
@@ -33,15 +33,18 @@ A production-ready, multi-tenant-ready SaaS platform for managing charitable don
 - **PDF**: ReportLab
 - **Receipt storage**: Cloudflare R2 (chosen over Supabase Storage — zero egress fees; `SupabaseStorage` remains in the codebase as an alternative backend, just unused in this deployment)
 - **Hosting**: Cloudflare Pages (frontend) · Render (backend) · Supabase (DB) — none of these are connected/deployed yet, see [docs/09-session-handoff.md](docs/09-session-handoff.md) §2
+- **Security**: TOTP 2FA, account lockout, per-identity + per-IP rate limiting, signed receipt-download tokens, magic-byte-validated image uploads — see [docs/06-deployment-security.md](docs/06-deployment-security.md)
+- **CI**: GitHub Actions (`.github/workflows/ci.yml`) — ruff/mypy/alembic/pytest for the backend, lint/typecheck/build for the frontend
 
 ## Repository Layout
 
 ```
 donation/
-├── backend/    FastAPI application — see docs/05-architecture.md §5.4
-├── frontend/   Next.js application
+├── backend/    FastAPI application (incl. Dockerfile) — see docs/05-architecture.md §5.4
+├── frontend/   Next.js application (incl. Dockerfile)
 ├── docs/       this documentation set
-└── infra/      local Postgres init scripts
+├── infra/      local Postgres init scripts
+└── .github/    CI workflow
 ```
 
 ## Reading Order

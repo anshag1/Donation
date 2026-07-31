@@ -16,19 +16,15 @@
 | **QR code verification** | Printable receipt QR that links to a verification page | Small add-on once receipt storage/URLs are stable |
 | **Digital signature** | Cryptographically signed PDF receipts (not just an image of a signature) | Compliance-driven; add when an org requests it |
 | **Duplicate receipt self-service** | Let donors regenerate their own receipt via mobile/OTP verification, without contacting admin | Requires donor-facing auth (currently admin-only action) |
-| **Durable task queue** | Move background PDF/email work from in-process `BackgroundTasks` to Celery/RQ + Redis or a managed queue | Only needed once donation volume risks task loss on redeploy |
 | **Donor self-service login** | Donor accounts to view full history without needing the receipt number | Currently receipts are accessed via signed link; full accounts are a bigger auth surface |
-| **Signed receipt download tokens** | Require a signed token or mobile-verification on `GET /receipts/{number}/download`, per the original API design | Concrete, scoped hardening item found during the admin-dashboard build — receipt numbers are sequential/low-entropy today |
-| **Image upload for event banners & org logo/signature** | Real file upload (multipart) through the storage abstraction, replacing today's plain URL string fields | `storage_service.py`'s adapter already exists for receipt PDFs; extending it to admin-uploaded images is mechanical, just not built yet |
-| **Email-invite flow for new admin users** | Send a signup link instead of the super_admin setting a temporary password directly | Needs a dedicated Resend template + a one-time token/expiry model |
-| **2FA (TOTP) for admin login** | `admin_users.two_factor_enabled` column already exists | Needs a TOTP library + QR enrollment UI; scoped out of this pass |
-| **XLSX and PDF summary reports** | `.xlsx` export and event-wise/monthly/yearly PDF summaries | CSV export (built) covers the same data; these are presentation-layer additions on top of it |
+
+All the items previously listed here (durable task queue, signed receipt-download tokens, image upload, email-invite, 2FA, XLSX/PDF reports) were built in the hardening pass — see Milestone 7 below.
 
 ## 7.2 Development Milestones
 
 ### Milestone 0 — Foundations ✅ DONE
-- Repo scaffolding (monorepo structure per [05-architecture.md](05-architecture.md)); CI pipeline **not yet added** (no `.github/workflows/` — flagged, not silently skipped; straightforward to add once there's a remote to push to).
-- Database schema + Alembic migration for all 11 entities, applied and verified against a real local Postgres.
+- Repo scaffolding (monorepo structure per [05-architecture.md](05-architecture.md)); CI pipeline added in Milestone 7 (`.github/workflows/ci.yml`).
+- Database schema + Alembic migration for all entities, applied and verified against a real local Postgres.
 - Auth: **native FastAPI JWT**, not Better Auth — see [05-architecture.md](05-architecture.md) for why. `scripts/seed.py` creates a demo organization + super_admin + event.
 - **Exit criteria met**: `POST /auth/login` + `GET /auth/me` work end-to-end against the seeded admin; migrations run clean. (No admin dashboard UI yet, so "empty dashboard renders" doesn't apply — that's Milestone 3.)
 
@@ -40,12 +36,12 @@
 - **Exit criteria met** (adapted): a *simulated* signed webhook — standing in for the one step that needs a real Razorpay account — creates a `donation` row with `status=success` and a `payment` row, purely through the webhook path; confirmed the client-callback endpoint never flips status (it's logged-only, verified in code and by test). A real Razorpay test-mode run is documented in [08-local-development.md](08-local-development.md) §8.5 but requires the developer's own test account.
 
 ### Milestone 2 — Receipts ✅ DONE
-- ReportLab PDF template — all required fields present (org name, receipt no., date, donor details, amount + words, purpose, payment/order IDs, signature line, thank-you message). Org logo/signature *images* deferred to the admin-dashboard pass (no upload UI exists yet to provide them).
+- ReportLab PDF template — all required fields present (org name, receipt no., date, donor details, amount + words, purpose, payment/order IDs, signature line, thank-you message). Org logo/signature images are now real uploads (Milestone 7), not just URL fields.
 - Receipt numbering: per-org, per-financial-year, race-condition-safe under concurrency — proven by a test that fires 10 concurrent allocations across separate DB sessions and asserts a gap-free unique sequence.
 - Object storage: adapter pattern (`storage_service.py`) with a working `LocalFilesystemStorage` for dev, plus `SupabaseStorage` and `R2Storage` (Cloudflare R2 — this deployment's chosen production backend, see [docs/09-session-handoff.md](09-session-handoff.md)) implementations, both untested against a real account (no credentials available in this environment).
 - Resend email integration: real API call when `RESEND_API_KEY` is set, graceful no-op log otherwise.
 - **Exit criteria met**: proven via `scripts/simulate_webhook.py` — a donation reaches `success` with a downloadable, correctly-formatted PDF receipt within the same request cycle that processes the webhook.
-- **Bugs found and fixed while verifying this milestone** (see [08-local-development.md](08-local-development.md) and inline code comments): JWT `exp`/`iat` were encoded as ISO datetime strings instead of the numeric Unix timestamps PyJWT's own expiry check requires; `razorpay.Utility.verify_webhook_signature` was called unbound off the class instead of on an instance; Postgres rejects `FOR UPDATE` combined with an outer join, which the donation+payment lock query initially produced; ReportLab's base-14 Helvetica font has no glyph for the ₹ sign and silently rendered a missing-glyph box (fixed by using "Rs." in PDFs specifically, keeping ₹ on web/email).
+- **Bugs found and fixed while verifying this milestone**: JWT `exp`/`iat` were encoded as ISO datetime strings instead of the numeric Unix timestamps PyJWT's own expiry check requires; `razorpay.Utility.verify_webhook_signature` was called unbound off the class instead of on an instance; Postgres rejects `FOR UPDATE` combined with an outer join, which the donation+payment lock query initially produced; ReportLab's base-14 Helvetica font has no glyph for the ₹ sign and silently rendered a missing-glyph box (fixed by using "Rs." in PDFs specifically, keeping ₹ on web/email — and re-broken/re-fixed for the new summary-report PDF in Milestone 7, see below).
 
 ### Milestone 3 — Admin Dashboard Core ✅ DONE
 - Dashboard KPIs (today/week/month/year/all-time total + count), backed by a real SQL aggregation over successful donations.
@@ -53,28 +49,46 @@
 - Donor directory (aggregated total donated + donation count + last donation date) + profile/history view.
 - Event CRUD (create/list/get/update/soft-delete, blocked from deleting an event with donations against it).
 - **Exit criteria met**: verified in a real browser — admin creates an event via the UI, it appears immediately in the list, and the public `/donate/[slug]` page (built in Milestone 1) already renders whatever's in the `events` table, so a newly created active event is live without any extra wiring. Donations tracked against it show up filtered by `event_id`.
-- **Deviation**: `/events/[eventSlug]` as a *standalone* public event-details page (separate from the donation form) wasn't built — the donation form itself (`/donate/[eventSlug]`) already shows the event banner/description inline, which covers the same need for v1.
+- Standalone `/events/[eventSlug]` public page built in Milestone 7 (see below) — the deviation noted in earlier drafts of this doc is resolved.
 
-### Milestone 4 — Receipt & Report Management — MOSTLY DONE
-- ✅ Resend receipt action, duplicate receipt generation (watermarked, returned as a direct PDF download).
-- ✅ CSV export with the same filters as the donations list (capped at 20,000 rows, documented not silent).
-- ○ Excel (.xlsx) export and PDF summary reports (event-wise/monthly/yearly) — not built. CSV covers the same underlying data; XLSX/PDF are presentation-layer additions on top of data access that already exists, reasonable to defer until an org actually asks for that specific format.
-- **Exit criteria** (adapted): a treasurer-role admin resends a receipt email and downloads a CSV of a date range, both verified via automated RBAC tests and a live browser session — matching totals against the dashboard wasn't separately re-verified since both read from the same `donation_repo` queries.
+### Milestone 4 — Receipt & Report Management ✅ DONE
+- Resend receipt action, duplicate receipt generation (watermarked, returned as a direct PDF download).
+- CSV export with the same filters as the donations list (capped at 20,000 rows, documented not silent).
+- XLSX export (`GET /admin/reports/export.xlsx`, openpyxl) and PDF summary reports (`GET /admin/reports/summary.pdf` — event-wise/monthly/yearly, ReportLab) — built in Milestone 7.
+- **Exit criteria met**: a treasurer-role admin resends a receipt email, downloads a CSV/XLSX of a date range, and downloads a yearly/monthly/event summary PDF, all verified via automated RBAC tests and a live browser session.
 
 ### Milestone 5 — RBAC, Audit, Hardening ✅ DONE
-- Full role/permission matrix enforcement across all 20 admin endpoints — proven by an automated security sweep (`tests/integration/test_admin_endpoints_security.py`): every endpoint rejects missing/garbage auth, every role boundary is checked with a real HTTP request (not just code inspection), and cross-organization isolation is verified for events, donations, dashboard totals, and user management.
-- User management UI: create (direct password, not email-invite — deferred), edit roles/active status, with a self-lockout guard (can't deactivate or demote your own `super_admin` account).
-- Audit log capture wired into the actual mutation paths (`admin_login`, `admin_login_failed`, `donation_confirmed`, `donation_payment_failed`, `event_created/updated/deleted`, `receipt_resend_email`, `receipt_duplicate_generated`, `admin_user_created/updated`, `organization_updated`) + a viewer UI.
-- Rate limiting on login (5/min/IP) and donation initiation (10/min/IP); refresh-token rotation now also revokes the exchanged token (closing a replay window the original design left open — see [06-deployment-security.md](06-deployment-security.md)).
-- **Exit criteria met**: 75 backend tests pass, including a dedicated security sweep with per-role denial assertions (not just "it compiles") and cross-org isolation tests that insert real data into a second organization and assert it's neither visible nor mutable from the first org's session.
+- Full role/permission matrix enforcement across all admin endpoints — proven by an automated security sweep (`tests/integration/test_admin_endpoints_security.py`): every endpoint rejects missing/garbage auth, every role boundary is checked with a real HTTP request (not just code inspection), and cross-organization isolation is verified for events, donations, dashboard totals, and user management.
+- User management UI: create via email-invite (Milestone 7 — no longer a direct temp password), edit roles/active status, with a self-lockout guard (can't deactivate or demote your own `super_admin` account).
+- Audit log capture wired into the actual mutation paths (`admin_login`, `admin_login_failed`, `admin_account_locked`, `admin_2fa_enabled`, `admin_2fa_disabled`, `admin_invite_accepted`, `donation_confirmed`, `donation_payment_failed`, `event_created/updated/deleted`, `event_banner_uploaded`, `receipt_resend_email`, `receipt_duplicate_generated`, `admin_user_created/updated`, `organization_updated`, `organization_logo_uploaded`, `organization_signature_uploaded`) + a viewer UI.
+- Rate limiting on login (5/min/IP) and donation initiation (10/min/IP), **plus** per-identity rate limiting (10/hour per mobile number, independent of IP) and account lockout after 5 failed logins (15 min, Milestone 7); refresh-token rotation also revokes the exchanged token (closing a replay window the original design left open).
+- **Exit criteria met**: 121 backend tests pass, including a dedicated security sweep with per-role denial assertions (not just "it compiles") and cross-org isolation tests that insert real data into a second organization and assert it's neither visible nor mutable from the first org's session.
 
-### Milestone 6 — Production Launch (Week 10–12) — NOT STARTED
+### Milestone 6 — Production Launch — NOT STARTED
 - Staging environment with Razorpay test mode fully rehearsed end-to-end.
 - Production deploy — **Cloudflare Pages** (frontend), **Render** (backend), **Supabase** (Postgres only), **Cloudflare R2** (receipt storage) — decided, not yet connected. Custom domain, monitoring/alerting (Sentry, uptime) not yet set up.
 - Go-live with real organization, first live donation reconciled manually against Razorpay dashboard.
 - **Exit criteria**: First real donor payment processed, receipt received, and reconciled correctly in production.
 
-### Post-Launch — Stabilization (Week 12+)
+### Milestone 7 — Hardening & Feature Completion ✅ DONE
+
+Closed every gap tracked in this doc's previous drafts (and in `docs/09-session-handoff.md` §6 "What's NOT built"), with a security-first ordering and a dedicated adversarial review pass at the end.
+
+- **Signed, expiring receipt-download tokens**: `GET /receipts/{number}/download` now requires a `?token=` minted by `create_receipt_download_token` (JWT, `purpose=receipt_download`, scoped to one specific receipt id, 30-day expiry) — closes the "sequential receipt numbers are enumerable" gap flagged since Milestone 5. Same generic 401 whether the token is missing, invalid, expired, or valid-for-a-different-receipt.
+- **Per-identity rate limiting + account lockout**: `app/core/identity_rate_limit.py` (in-memory sliding window, mirrors slowapi's own "single-instance in-memory is fine at this scale" call) limits donation-initiate attempts per mobile number, independent of the existing per-IP limit. `admin_users.failed_login_attempts`/`locked_until` lock an account for 15 minutes after 5 consecutive failed logins (password or TOTP code) — the lockout message is identical to "invalid credentials" so it can't be used to fingerprint account state.
+- **2FA (TOTP)**: `pyotp` + QR enrollment (`POST /auth/2fa/setup`, `/2fa/enable`, `/2fa/disable`), a two-step login (`POST /auth/login` returns `mfa_required`+`mfa_token` when enabled; `POST /auth/login/verify-2fa` completes it) — see `app/services/totp_service.py`, `app/services/auth_service.py`.
+- **Real image upload**: `POST /admin/events/{id}/banner`, `/admin/organization/logo`, `/admin/organization/signature` — multipart, magic-byte-validated (PNG/JPEG/WEBP, 5MB cap, server-generated filenames — see `app/core/file_validation.py`), stored via the existing storage adapter, served back through a new public `GET /assets/{key}` route restricted to an allowlist of safe prefixes (never `receipts/`).
+- **Email-invite flow**: `POST /admin/users` no longer takes a `password` — it generates a random unusable password plus a hashed, single-use, 7-day invite token; the new admin sets their own password via `/admin/accept-invite` (frontend) → `POST /auth/accept-invite` (backend, public by design). Falls back to returning the raw invite link in the API response when Resend isn't configured (never logged — see the security-review finding below).
+- **XLSX + PDF summary reports**: `GET /admin/reports/export.xlsx` (openpyxl, same filters/cap as the CSV export) and `GET /admin/reports/summary.pdf` (event-wise/monthly/yearly totals, ReportLab).
+- **Durable task queue**: `app/worker/queue.py` chooses RQ+Redis (`app/worker/rq_queue.py`, `scripts/worker.py`) over in-process `BackgroundTasks` when `REDIS_URL` is set — same adapter pattern as storage/email. `docker-compose.yml` has an opt-in `redis` service behind the `durable-queue` profile.
+- **CI pipeline**: `.github/workflows/ci.yml` — backend job (ruff hard gate, mypy advisory/non-blocking, `alembic upgrade head` against a fresh Postgres service container, full pytest run) and frontend job (lint, typecheck, build).
+- **Frontend Dockerfile**: multi-stage, Next.js `output: "standalone"` — not the actual deployment path (Cloudflare Pages) but a verified local-container/fallback option. Built and smoke-tested against a running container.
+- **Standalone public `/events/[eventSlug]` page**: resolves the Milestone 3 deviation.
+- **Independent security review** (see `docs/06-deployment-security.md` §6.3): two parallel adversarial passes (backend, frontend) over the full diff found one real, actionable issue — `send_admin_invite_email`'s no-op fallback logged the raw invite token (a bearer credential equivalent to a password-reset link, sufficient alone to take over a freshly-created account including a super_admin) at INFO level. Fixed by dropping the token from the log line entirely; a regression test (`test_invite_token_is_never_logged`) asserts it never appears in captured logs again.
+- **Real bug found along the way**: `format_inr()`/`format_inr_for_pdf()` received a `Decimal` (not `int`) from the new SQL `SUM()` aggregate queries and crashed with `ValueError: invalid format string` — fixed by normalizing via `int()` inside both formatters. Caught live (not just by a passing test) via a Playwright-driven summary-PDF download that rendered the ₹ symbol as a missing-glyph black box (the same font issue Milestone 2 already fixed once for receipts, reintroduced because the new summary-report code called `format_inr()` instead of `format_inr_for_pdf()`) and via a local-dev image-serving bug (`serve_local_file` hardcoded `media_type="application/pdf"` from its receipts-only origins, so uploaded PNGs/JPEGs were served with the wrong Content-Type and silently refused by the browser under `X-Content-Type-Options: nosniff`) — both fixed and covered by regression tests.
+- **Exit criteria met**: 121 backend tests pass (up from 75 at the end of Milestone 5); ruff clean; frontend lint/typecheck/build clean; every new flow (2FA enrollment + login challenge, image upload round-trip including public re-fetch, invite creation → accept → login, XLSX/PDF report downloads, the standalone event page) verified live in a real browser via Playwright, not just unit tests.
+
+### Post-Launch — Stabilization
 - Monitor real usage, fix edge cases (webhook retries, email deliverability, PDF rendering under real org logos of varying sizes).
 - Prioritize roadmap items above based on actual organization feedback, not speculation.
 

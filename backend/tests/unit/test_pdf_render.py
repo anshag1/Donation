@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.services.amount_in_words import amount_in_paise_to_words
 from app.services.format_utils import format_inr, format_inr_for_pdf
@@ -9,7 +9,7 @@ def _sample_data(**overrides) -> ReceiptPdfData:
     defaults = dict(
         organization_name="Demo Charitable Trust",
         receipt_number="TEST/2026-27/000001",
-        donation_date=datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc),
+        donation_date=datetime(2026, 7, 29, 12, 0, tzinfo=UTC),
         donor_name="Jane Donor",
         donor_mobile="9876500000",
         amount_display=format_inr_for_pdf(150000),

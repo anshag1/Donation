@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2 } from "lucide-react";
+import { Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -35,7 +35,25 @@ export function EventForm({ event }: { event?: AdminEvent }) {
   const [startDate, setStartDate] = useState(event?.start_date ?? "");
   const [endDate, setEndDate] = useState(event?.end_date ?? "");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isUploadingBanner, setIsUploadingBanner] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  async function onBannerFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !event) return;
+    setIsUploadingBanner(true);
+    try {
+      const updated = await adminApiClient.upload<AdminEvent>(`/api/v1/admin/events/${event.id}/banner`, file);
+      setBannerUrl(updated.banner_url ?? "");
+      toast.success("Banner uploaded");
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : "Could not upload banner image.";
+      toast.error("Upload failed", { description: message });
+    } finally {
+      setIsUploadingBanner(false);
+    }
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -119,6 +137,27 @@ export function EventForm({ event }: { event?: AdminEvent }) {
           Banner image URL <span className="font-normal text-muted-foreground">(optional)</span>
         </Label>
         <Input id="banner_url" value={bannerUrl} onChange={(e) => setBannerUrl(e.target.value)} />
+        {isEditing ? (
+          <div>
+            <Label
+              htmlFor="banner_upload"
+              className="mt-1 inline-flex cursor-pointer items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+            >
+              {isUploadingBanner ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
+              Or upload an image instead
+            </Label>
+            <input
+              id="banner_upload"
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              className="hidden"
+              disabled={isUploadingBanner}
+              onChange={onBannerFileSelected}
+            />
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">Save the event first to enable image upload.</p>
+        )}
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">

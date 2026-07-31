@@ -22,7 +22,7 @@
  * control.
  */
 
-import { ApiError, rawRequest, unwrapEnvelope } from "@/lib/api-client";
+import { API_BASE_URL, ApiError, rawRequest, unwrapEnvelope } from "@/lib/api-client";
 
 const ACCESS_TOKEN_STORAGE_KEY = "donation_admin_access_token";
 
@@ -32,6 +32,18 @@ export interface CurrentAdmin {
   email: string;
   full_name: string;
   roles: string[];
+  two_factor_enabled: boolean;
+}
+
+export interface LoginResult {
+  mfaRequired: boolean;
+  mfaToken?: string;
+}
+
+export interface TwoFactorSetup {
+  secret: string;
+  otpauth_uri: string;
+  qr_code_data_uri: string;
 }
 
 let accessToken: string | null = null;
@@ -53,12 +65,34 @@ function setAccessToken(token: string | null): void {
   }
 }
 
-export async function login(email: string, password: string): Promise<void> {
+interface LoginResponseBody {
+  access_token: string | null;
+  mfa_required: boolean;
+  mfa_token: string | null;
+}
+
+export async function login(email: string, password: string): Promise<LoginResult> {
   const response = await rawRequest("/api/v1/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
-  const data = await unwrapEnvelope<{ access_token: string }>(response);
+  const data = await unwrapEnvelope<LoginResponseBody>(response);
+  if (data.mfa_required) {
+    return { mfaRequired: true, mfaToken: data.mfa_token ?? undefined };
+  }
+  setAccessToken(data.access_token);
+  return { mfaRequired: false };
+}
+
+export async function verifyLogin2fa(mfaToken: string, code: string): Promise<void> {
+  const response = await rawRequest("/api/v1/auth/login/verify-2fa", {
+    method: "POST",
+    body: JSON.stringify({ mfa_token: mfaToken, code }),
+  });
+  const data = await unwrapEnvelope<LoginResponseBody>(response);
+  if (!data.access_token) {
+    throw new ApiError("UNAUTHORIZED", "Verification failed.", 401);
+  }
   setAccessToken(data.access_token);
 }
 
@@ -97,6 +131,32 @@ async function adminRequest<T>(path: string, init?: RequestInit): Promise<T> {
     const refreshed = await tryRefresh();
     if (refreshed) {
       response = await rawRequest(path, withAuth(getAccessToken()));
+    }
+  }
+  return unwrapEnvelope<T>(response);
+}
+
+/** Multipart file upload (event banners, org logo/signature). Deliberately
+ * does NOT set a Content-Type header — the browser must set it itself
+ * (including the multipart boundary), which `rawRequest`'s default JSON
+ * header would otherwise clobber. */
+async function adminUpload<T>(path: string, file: File): Promise<T> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const doUpload = (token: string | null) =>
+    fetch(`${API_BASE_URL}${path}`, {
+      method: "POST",
+      credentials: "include",
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      body: formData,
+    });
+
+  let response = await doUpload(getAccessToken());
+  if (response.status === 401) {
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      response = await doUpload(getAccessToken());
     }
   }
   return unwrapEnvelope<T>(response);
@@ -143,7 +203,28 @@ export const adminApiClient = {
     adminRequest<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
   delete: <T>(path: string) => adminRequest<T>(path, { method: "DELETE" }),
   download: (path: string, init?: RequestInit) => adminDownload(path, init),
+  upload: <T>(path: string, file: File) => adminUpload<T>(path, file),
 };
+
+export async function acceptInvite(token: string, password: string): Promise<void> {
+  const response = await rawRequest("/api/v1/auth/accept-invite", {
+    method: "POST",
+    body: JSON.stringify({ token, password }),
+  });
+  await unwrapEnvelope<null>(response);
+}
+
+export function setup2fa(): Promise<TwoFactorSetup> {
+  return adminApiClient.post<TwoFactorSetup>("/api/v1/auth/2fa/setup");
+}
+
+export function enable2fa(code: string): Promise<void> {
+  return adminApiClient.post<void>("/api/v1/auth/2fa/enable", { code });
+}
+
+export function disable2fa(code: string): Promise<void> {
+  return adminApiClient.post<void>("/api/v1/auth/2fa/disable", { code });
+}
 
 export async function fetchCurrentAdmin(): Promise<CurrentAdmin | null> {
   try {

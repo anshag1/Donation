@@ -23,6 +23,7 @@ from sqlalchemy import create_engine, select  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
 from app.config import get_settings  # noqa: E402
+from app.core.identity_rate_limit import donation_identity_limiter  # noqa: E402
 from app.core.rate_limit import limiter  # noqa: E402
 from app.core.security import hash_password  # noqa: E402
 from app.database import get_db  # noqa: E402
@@ -75,6 +76,7 @@ def _reset_rate_limiter():
     ("testclient"), so without a reset, rate-limit counters accumulate
     ACROSS tests and cause unrelated later tests to spuriously 429."""
     limiter.reset()
+    donation_identity_limiter.reset()
     yield
 
 

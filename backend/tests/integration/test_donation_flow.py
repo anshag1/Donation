@@ -86,6 +86,25 @@ def test_full_donation_flow_success(client, organization, monkeypatch, db):
     assert pdf_path.is_file()
     assert pdf_path.read_bytes().startswith(b"%PDF-")
 
+    # The download URL embeds a signed, receipt-scoped token — following it
+    # (without auth) must actually redirect to the PDF...
+    download_url = status_after["receipt_download_url"]
+    download_response = client.get(download_url, follow_redirects=False)
+    assert download_response.status_code in (302, 307)
+
+    # ...but the same route with no token, a garbage token, or another
+    # receipt's token must be rejected — receipt numbers are sequential and
+    # must not be usable alone to fetch someone else's receipt.
+    path_only = download_url.split("?", 1)[0]
+    assert client.get(path_only).status_code == 401
+    assert client.get(f"{path_only}?token=not-a-real-token").status_code == 401
+
+    other_receipt_id = uuid.uuid4()
+    from app.core.security import create_receipt_download_token
+
+    mismatched_token = create_receipt_download_token(other_receipt_id)
+    assert client.get(f"{path_only}?token={mismatched_token}").status_code == 401
+
 
 def test_donation_initiate_rejects_invalid_mobile_number(client, organization):
     response = client.post(
@@ -98,6 +117,27 @@ def test_donation_initiate_rejects_invalid_mobile_number(client, organization):
     )
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_donation_initiate_enforces_per_identity_rate_limit(client, organization, monkeypatch):
+    """Per-IP limiting alone wouldn't stop the same mobile number being
+    hammered from many rotating IPs — the identity limiter (keyed on mobile
+    number, independent of slowapi's per-IP limiter) must reject once a
+    single mobile number is over its budget, regardless of caller IP."""
+    monkeypatch.setattr(
+        "app.api.v1.public.donations.donation_identity_limiter.allow",
+        lambda identity, *, max_requests, window_seconds: False,
+    )
+    response = client.post(
+        "/api/v1/donations/initiate",
+        json={
+            "event_id": None,
+            "donor": {"full_name": "Rate Limited Donor", "mobile_number": "9876500002"},
+            "amount_in_paise": 10000,
+        },
+    )
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "RATE_LIMITED"
 
 
 def test_webhook_with_bad_signature_is_rejected(client, organization, donation_with_payment):

@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: donation
+          POSTGRES_PASSWORD: donation
+          POSTGRES_DB: donation_test
+        ports:
+          - 5435:5432
+        options: >-
+          --health-cmd "pg_isready -U donation -d donation_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg://donation:donation@localhost:5435/donation_test
+      JWT_SECRET: ci-test-secret-do-not-use-in-production
+      RAZORPAY_WEBHOOK_SECRET: ci_test_webhook_secret
+      ENVIRONMENT: test
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check app tests scripts
+
+      - name: Typecheck (mypy)
+        # Advisory only for now — strict mode has pre-existing violations
+        # across the codebase from before mypy was wired into CI (see
+        # docs/07-roadmap.md). Ruff above is the hard gate; this surfaces
+        # regressions in review without blocking merges on old debt.
+        run: mypy app || true
+
+      - name: Alembic migrations apply cleanly
+        run: alembic upgrade head
+
+      - name: Run tests
+        run: python -m pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:8000

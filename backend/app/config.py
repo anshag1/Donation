@@ -1,6 +1,5 @@
 from functools import lru_cache
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,6 +39,23 @@ class Settings(BaseSettings):
     cloudflare_r2_bucket: str = ""
 
     default_org_receipt_prefix: str = "DEMO"
+
+    # Account lockout — closes the gap where flat per-IP rate limiting alone
+    # doesn't stop a distributed/low-and-slow credential-stuffing attempt
+    # against one specific account.
+    login_lockout_threshold: int = 5
+    login_lockout_minutes: int = 15
+
+    # Per-identity (mobile number) limiting on donation initiation — flat
+    # per-IP limiting alone doesn't stop the same mobile number being
+    # hammered from many rotating IPs.
+    donation_identity_rate_limit_per_hour: int = 10
+
+    redis_url: str = ""
+
+    @property
+    def durable_queue_configured(self) -> bool:
+        return bool(self.redis_url)
 
     @property
     def razorpay_configured(self) -> bool:

@@ -179,8 +179,11 @@ export interface AdminUserListItem {
 export interface AdminUserCreateInput {
   email: string;
   full_name: string;
-  password: string;
   roles: AdminRole[];
+}
+
+export interface AdminUserCreatedOut extends AdminUserListItem {
+  invite_url: string | null;
 }
 
 export interface AdminUserUpdateInput {

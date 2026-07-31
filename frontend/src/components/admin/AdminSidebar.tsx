@@ -12,6 +12,7 @@ import {
   Settings,
   FileDown,
   LogOut,
+  ShieldCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/components/admin/AuthProvider";
@@ -33,6 +34,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/admin/audit-logs", label: "Audit Logs", icon: ScrollText, roles: ["super_admin", "treasurer"] },
   { href: "/admin/users", label: "Users", icon: UserCog, roles: ["super_admin"] },
   { href: "/admin/settings", label: "Settings", icon: Settings, roles: ["super_admin"] },
+  { href: "/admin/account", label: "My Account", icon: ShieldCheck },
 ];
 
 export function AdminSidebar() {

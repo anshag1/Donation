@@ -171,3 +171,48 @@ def sum_amount_and_count_all_time(db: Session, organization_id: uuid.UUID) -> tu
     ).where(Donation.organization_id == organization_id, Donation.status == SUCCESS)
     total, count = db.execute(stmt).one()
     return total, count
+
+
+def aggregate_totals_for_event(db: Session, organization_id: uuid.UUID, event_id: uuid.UUID) -> tuple[int, int]:
+    """(total amount in paise, count) of SUCCESSFUL donations for one event —
+    the money figure a treasurer's event-wise summary report cares about."""
+    stmt = select(func.coalesce(func.sum(Donation.amount_in_paise), 0), func.count()).where(
+        Donation.organization_id == organization_id,
+        Donation.event_id == event_id,
+        Donation.status == SUCCESS,
+    )
+    total, count = db.execute(stmt).one()
+    return total, count
+
+
+def aggregate_totals_for_month(
+    db: Session, organization_id: uuid.UUID, *, year: int, month: int
+) -> tuple[int, int]:
+    stmt = select(func.coalesce(func.sum(Donation.amount_in_paise), 0), func.count()).where(
+        Donation.organization_id == organization_id,
+        Donation.status == SUCCESS,
+        func.extract("year", Donation.created_at) == year,
+        func.extract("month", Donation.created_at) == month,
+    )
+    total, count = db.execute(stmt).one()
+    return total, count
+
+
+def aggregate_monthly_breakdown_for_year(
+    db: Session, organization_id: uuid.UUID, *, year: int
+) -> list[tuple[int, int, int]]:
+    """One (month 1-12, total amount in paise, count) row per month that had
+    at least one successful donation in `year` — used for the yearly summary
+    report's month-by-month breakdown."""
+    month_expr = func.extract("month", Donation.created_at)
+    stmt = (
+        select(month_expr, func.coalesce(func.sum(Donation.amount_in_paise), 0), func.count())
+        .where(
+            Donation.organization_id == organization_id,
+            Donation.status == SUCCESS,
+            func.extract("year", Donation.created_at) == year,
+        )
+        .group_by(month_expr)
+        .order_by(month_expr)
+    )
+    return [(int(row[0]), row[1], row[2]) for row in db.execute(stmt).all()]

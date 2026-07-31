@@ -4,14 +4,21 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError
 from app.core.rbac import require_role
 from app.deps import CurrentAdmin, DbDep
+from app.models.organization import Organization
 from app.models.role import SUPER_ADMIN
 from app.repositories import admin_user_repo
-from app.schemas.admin_user import AdminUserCreateRequest, AdminUserListItem, AdminUserUpdateRequest
+from app.schemas.admin_user import (
+    AdminUserCreatedOut,
+    AdminUserCreateRequest,
+    AdminUserListItem,
+    AdminUserUpdateRequest,
+)
 from app.schemas.common import ApiResponse, PaginatedData
-from app.services import audit_service
+from app.services import audit_service, email_service
 
 router = APIRouter(prefix="/admin/users", tags=["admin:users"])
 
@@ -45,15 +52,25 @@ def list_users(
     )
 
 
-@router.post("", response_model=ApiResponse[AdminUserListItem])
+@router.post("", response_model=ApiResponse[AdminUserCreatedOut])
 def create_user(
     body: AdminUserCreateRequest,
     request: Request,
     db: Session = DbDep,
     current_admin: CurrentAdmin = Depends(require_role(SUPER_ADMIN)),
-) -> ApiResponse[AdminUserListItem]:
+) -> ApiResponse[AdminUserCreatedOut]:
+    settings = get_settings()
     try:
-        user = admin_user_repo.create(db, current_admin.organization_id, body)
+        user, raw_invite_token = admin_user_repo.create(db, current_admin.organization_id, body)
+        organization = db.get(Organization, current_admin.organization_id)
+        invite_url = f"{settings.frontend_origin.rstrip('/')}/admin/accept-invite?token={raw_invite_token}"
+        sent = email_service.send_admin_invite_email(
+            settings,
+            to_email=user.email,
+            full_name=user.full_name,
+            organization_name=organization.name if organization else "your organization",
+            invite_url=invite_url,
+        )
         audit_service.record(
             db,
             organization_id=current_admin.organization_id,
@@ -69,7 +86,9 @@ def create_user(
         db.rollback()
         raise ConflictError(f"A user with email '{body.email}' already exists") from exc
     db.refresh(user)
-    return ApiResponse(data=_to_list_item(user))
+    return ApiResponse(
+        data=AdminUserCreatedOut(**_to_list_item(user).model_dump(), invite_url=None if sent else invite_url)
+    )
 
 
 @router.patch("/{user_id}", response_model=ApiResponse[AdminUserListItem])

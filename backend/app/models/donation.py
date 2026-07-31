@@ -34,6 +34,6 @@ class Donation(Base, UUIDPKMixin, TimestampMixin):
     # at donation time. See docs/03-database-schema.md §3.4 (donations).
     donor_snapshot_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
-    payment: Mapped["Payment | None"] = relationship(back_populates="donation", uselist=False)
-    receipt: Mapped["Receipt | None"] = relationship(back_populates="donation", uselist=False)
-    event: Mapped["Event | None"] = relationship(viewonly=True)
+    payment: Mapped["Payment | None"] = relationship(back_populates="donation", uselist=False)  # noqa: F821
+    receipt: Mapped["Receipt | None"] = relationship(back_populates="donation", uselist=False)  # noqa: F821
+    event: Mapped["Event | None"] = relationship(viewonly=True)  # noqa: F821

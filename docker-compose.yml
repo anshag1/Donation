@@ -21,5 +21,23 @@ services:
       timeout: 5s
       retries: 10
 
+  # Optional — only needed to exercise the durable RQ task queue locally
+  # (see app/worker/rq_queue.py). Local-first mode (the default) doesn't use
+  # this: receipt generation runs in-process via FastAPI BackgroundTasks
+  # unless REDIS_URL is set in backend/.env. Start with:
+  #   docker compose --profile durable-queue up -d
+  redis:
+    image: redis:7-alpine
+    container_name: donation_redis
+    restart: unless-stopped
+    profiles: ["durable-queue"]
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   donation_pg_data:

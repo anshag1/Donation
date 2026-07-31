@@ -75,6 +75,11 @@ erDiagram
         string full_name
         boolean is_active
         boolean two_factor_enabled
+        string two_factor_secret
+        int failed_login_attempts
+        timestamptz locked_until
+        string invite_token_hash
+        timestamptz invite_expires_at
         timestamptz last_login_at
         timestamptz created_at
         timestamptz updated_at
@@ -198,6 +203,9 @@ erDiagram
 ### `admin_users` / `roles` / `admin_user_roles`
 - Many-to-many via join table even though v1 UI assigns one role per user — avoids a future migration when a user needs two roles (e.g. `treasurer` + `coordinator`).
 - `roles` seeded via migration: `super_admin`, `admin`, `treasurer`, `coordinator`, `viewer`.
+- `two_factor_secret`: the TOTP secret, set by `/2fa/setup` before `two_factor_enabled` flips true; cleared on disable.
+- `failed_login_attempts` / `locked_until`: account-lockout state — 5 consecutive failures (password or TOTP) lock the account for 15 minutes and reset the counter (see `app/repositories/admin_user_repo.py`).
+- `invite_token_hash` / `invite_expires_at`: set by `POST /admin/users` (a SHA-256 hash, never the raw token) and cleared once `POST /auth/accept-invite` is completed — a newly-created account's `password_hash` is an unusable random value until then.
 
 ### `donors`
 - Unique-ish identity key is `(organization_id, mobile_number)` — enforced via a partial unique index (`WHERE deleted_at IS NULL`) — used to dedupe/upsert on each donation.

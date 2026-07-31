@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, Copy } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { adminApiClient } from "@/lib/auth";
 import { ApiError } from "@/lib/api-client";
-import type { AdminRole, AdminUserListItem } from "@/types/api";
+import type { AdminRole, AdminUserCreatedOut, AdminUserListItem } from "@/types/api";
 
 const ALL_ROLES: AdminRole[] = ["super_admin", "admin", "treasurer", "coordinator", "viewer"];
 
@@ -33,10 +33,10 @@ export function UserFormDialog({ user, trigger, onSaved }: UserFormDialogProps) 
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState(user?.email ?? "");
   const [fullName, setFullName] = useState(user?.full_name ?? "");
-  const [password, setPassword] = useState("");
   const [roles, setRoles] = useState<AdminRole[]>(user?.roles ?? ["viewer"]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
 
   function toggleRole(role: AdminRole) {
     setRoles((prev) => (prev.includes(role) ? prev.filter((r) => r !== role) : [...prev, role]));
@@ -50,12 +50,23 @@ export function UserFormDialog({ user, trigger, onSaved }: UserFormDialogProps) 
       if (isEditing) {
         await adminApiClient.patch(`/api/v1/admin/users/${user.id}`, { full_name: fullName, roles });
         toast.success("User updated");
+        setOpen(false);
+        onSaved();
       } else {
-        await adminApiClient.post("/api/v1/admin/users", { email, full_name: fullName, password, roles });
-        toast.success("User invited");
+        const created = await adminApiClient.post<AdminUserCreatedOut>("/api/v1/admin/users", {
+          email,
+          full_name: fullName,
+          roles,
+        });
+        if (created.invite_url) {
+          // Resend isn't configured — show the link so it can be shared manually.
+          setInviteUrl(created.invite_url);
+        } else {
+          toast.success("Invite email sent");
+          setOpen(false);
+        }
+        onSaved();
       }
-      setOpen(false);
-      onSaved();
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Something went wrong. Please try again.";
       setError(message);
@@ -65,14 +76,57 @@ export function UserFormDialog({ user, trigger, onSaved }: UserFormDialogProps) 
     }
   }
 
+  function onOpenChange(next: boolean) {
+    setOpen(next);
+    if (!next) setInviteUrl(null);
+  }
+
+  if (inviteUrl) {
+    return (
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogTrigger asChild>{trigger}</DialogTrigger>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>User created</DialogTitle>
+            <DialogDescription>
+              Email delivery isn&apos;t configured on this server — share this one-time invite link with them
+              directly. It expires in 7 days.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center gap-2 rounded-md border bg-muted/50 p-2">
+            <code className="flex-1 truncate text-xs">{inviteUrl}</code>
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              onClick={() => {
+                navigator.clipboard.writeText(inviteUrl);
+                toast.success("Copied to clipboard");
+              }}
+            >
+              <Copy className="size-4" />
+            </Button>
+          </div>
+          <DialogFooter>
+            <Button type="button" onClick={() => onOpenChange(false)}>
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>{trigger}</DialogTrigger>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{isEditing ? "Edit user" : "New admin user"}</DialogTitle>
           <DialogDescription>
-            {isEditing ? "Update this admin's name and roles." : "They'll sign in with the email and password you set here."}
+            {isEditing
+              ? "Update this admin's name and roles."
+              : "They'll receive an email invite to set their own password."}
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={onSubmit} className="space-y-4">
@@ -86,20 +140,6 @@ export function UserFormDialog({ user, trigger, onSaved }: UserFormDialogProps) 
             <Label htmlFor="full_name">Full name</Label>
             <Input id="full_name" required value={fullName} onChange={(e) => setFullName(e.target.value)} />
           </div>
-          {!isEditing && (
-            <div className="space-y-1.5">
-              <Label htmlFor="password">Temporary password</Label>
-              <Input
-                id="password"
-                type="password"
-                required
-                minLength={10}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">At least 10 characters. Share this with them securely.</p>
-            </div>
-          )}
           <div className="space-y-1.5">
             <Label>Roles</Label>
             <div className="grid grid-cols-2 gap-2">
@@ -120,7 +160,7 @@ export function UserFormDialog({ user, trigger, onSaved }: UserFormDialogProps) 
           <DialogFooter>
             <Button type="submit" disabled={isSubmitting || roles.length === 0}>
               {isSubmitting && <Loader2 className="animate-spin" />}
-              {isEditing ? "Save changes" : "Create user"}
+              {isEditing ? "Save changes" : "Send invite"}
             </Button>
           </DialogFooter>
         </form>

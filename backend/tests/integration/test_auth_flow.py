@@ -5,6 +5,8 @@ docs/06-deployment-security.md and app/services/auth_service.py.
 
 from sqlalchemy import select
 
+from app.config import get_settings
+from app.core.rate_limit import limiter
 from app.models.audit_log import AuditLog
 from tests.conftest import ADMIN_TEST_PASSWORD
 
@@ -41,6 +43,48 @@ def test_login_with_unknown_email_returns_same_message_and_logs_nothing(client, 
     assert response.status_code == 401
     assert response.json()["error"]["message"] == "Invalid email or password"
     assert db.execute(select(AuditLog)).scalars().all() == []
+
+
+def test_account_locks_after_repeated_failed_logins_then_rejects_correct_password(client, admin_user, db):
+    threshold = get_settings().login_lockout_threshold
+
+    for _ in range(threshold):
+        response = client.post(
+            "/api/v1/auth/login", json={"email": admin_user.email, "password": "wrong-password"}
+        )
+        assert response.status_code == 401
+
+    lock_logs = db.execute(select(AuditLog).where(AuditLog.action == "admin_account_locked")).scalars().all()
+    assert len(lock_logs) == 1
+
+    db.refresh(admin_user)
+    assert admin_user.locked_until is not None
+    # The counter resets when a lock triggers, so it doesn't grow unbounded.
+    assert admin_user.failed_login_attempts == 0
+
+    # Reset the per-IP limiter only (a separate, orthogonal mechanism) so this
+    # next request is judged purely on account-lockout state, not slowapi's
+    # "5/minute" cap, which the loop above would otherwise also have tripped.
+    limiter.reset()
+    still_locked_response = client.post(
+        "/api/v1/auth/login", json={"email": admin_user.email, "password": ADMIN_TEST_PASSWORD}
+    )
+    assert still_locked_response.status_code == 401
+    assert still_locked_response.json()["error"]["message"] == "Invalid email or password"
+
+
+def test_successful_login_resets_failed_attempt_counter(client, admin_user, db):
+    client.post("/api/v1/auth/login", json={"email": admin_user.email, "password": "wrong-password"})
+    client.post("/api/v1/auth/login", json={"email": admin_user.email, "password": "wrong-password"})
+
+    ok_response = client.post(
+        "/api/v1/auth/login", json={"email": admin_user.email, "password": ADMIN_TEST_PASSWORD}
+    )
+    assert ok_response.status_code == 200
+
+    db.refresh(admin_user)
+    assert admin_user.failed_login_attempts == 0
+    assert admin_user.locked_until is None
 
 
 def test_refresh_rotates_token_and_revokes_the_old_one(client, admin_user):

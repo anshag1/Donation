@@ -33,4 +33,4 @@ class Payment(Base, UUIDPKMixin, TimestampMixin):
     failure_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    donation: Mapped["Donation"] = relationship(back_populates="payment")
+    donation: Mapped["Donation"] = relationship(back_populates="payment")  # noqa: F821

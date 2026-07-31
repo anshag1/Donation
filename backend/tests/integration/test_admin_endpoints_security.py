@@ -35,7 +35,15 @@ ALL_ADMIN_ENDPOINTS = [
     ("GET", "/api/v1/admin/organization"),
     ("PATCH", "/api/v1/admin/organization"),
     ("GET", "/api/v1/admin/reports/export.csv"),
+    ("GET", "/api/v1/admin/reports/export.xlsx"),
+    ("GET", "/api/v1/admin/reports/summary.pdf?period=year&year=2026"),
     ("GET", "/api/v1/auth/me"),
+    ("POST", "/api/v1/auth/2fa/setup"),
+    ("POST", "/api/v1/auth/2fa/enable"),
+    ("POST", "/api/v1/auth/2fa/disable"),
+    # accept-invite is deliberately public (a new admin has no session yet)
+    # and is NOT part of this sweep — see its own tests in
+    # test_admin_invite_flow.py.
 ]
 
 

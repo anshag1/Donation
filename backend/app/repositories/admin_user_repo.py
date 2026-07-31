@@ -1,4 +1,7 @@
+import hashlib
+import secrets
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
@@ -9,6 +12,12 @@ from app.models.admin_user import AdminUser
 from app.models.admin_user_role import AdminUserRole
 from app.models.role import Role
 from app.schemas.admin_user import AdminUserCreateRequest, AdminUserUpdateRequest
+
+INVITE_TOKEN_EXPIRE_DAYS = 7
+
+
+def _hash_invite_token(raw_token: str) -> str:
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
 
 def get_by_email(db: Session, email: str) -> AdminUser | None:
@@ -70,12 +79,21 @@ def _resolve_role_ids(db: Session, role_names: list[str]) -> list[uuid.UUID]:
     return [r.id for r in roles]
 
 
-def create(db: Session, organization_id: uuid.UUID, request: AdminUserCreateRequest) -> AdminUser:
+def create(db: Session, organization_id: uuid.UUID, request: AdminUserCreateRequest) -> tuple[AdminUser, str]:
+    """Creates the user with an unusable password (a random string only this
+    call ever sees) plus an invite token — nobody can sign in until they
+    follow the invite link and set their own password via accept_invite()
+    below. Returns (admin_user, raw_invite_token); the raw token is never
+    persisted, only its SHA-256 hash, so a database read alone can't be used
+    to accept someone else's invite."""
+    raw_invite_token = secrets.token_urlsafe(32)
     admin_user = AdminUser(
         organization_id=organization_id,
         email=request.email.lower(),
-        password_hash=hash_password(request.password),
+        password_hash=hash_password(secrets.token_urlsafe(32)),
         full_name=request.full_name,
+        invite_token_hash=_hash_invite_token(raw_invite_token),
+        invite_expires_at=datetime.now(UTC) + timedelta(days=INVITE_TOKEN_EXPIRE_DAYS),
     )
     db.add(admin_user)
     db.flush()
@@ -83,7 +101,21 @@ def create(db: Session, organization_id: uuid.UUID, request: AdminUserCreateRequ
     for role_id in _resolve_role_ids(db, request.roles):
         db.add(AdminUserRole(admin_user_id=admin_user.id, role_id=role_id))
     db.flush()
-    return admin_user
+    return admin_user, raw_invite_token
+
+
+def get_by_invite_token(db: Session, raw_token: str) -> AdminUser | None:
+    token_hash = _hash_invite_token(raw_token)
+    stmt = select(AdminUser).where(AdminUser.invite_token_hash == token_hash)
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def accept_invite(db: Session, admin_user: AdminUser, *, new_password_hash: str) -> None:
+    admin_user.password_hash = new_password_hash
+    admin_user.invite_token_hash = None
+    admin_user.invite_expires_at = None
+    admin_user.is_active = True
+    db.flush()
 
 
 def update(db: Session, admin_user: AdminUser, request: AdminUserUpdateRequest) -> AdminUser:
@@ -104,4 +136,30 @@ def update(db: Session, admin_user: AdminUser, request: AdminUserUpdateRequest) 
 
 def touch_last_login(db: Session, admin_user: AdminUser) -> None:
     admin_user.last_login_at = func.now()
+    db.flush()
+
+
+def is_locked(admin_user: AdminUser) -> bool:
+    return admin_user.locked_until is not None and admin_user.locked_until > datetime.now(UTC)
+
+
+def register_failed_login(
+    db: Session, admin_user: AdminUser, *, threshold: int, lockout_minutes: int
+) -> bool:
+    """Increments the failure counter and locks the account once `threshold`
+    consecutive failures are reached. Returns True if this call is what
+    triggered the lock (so the caller can audit-log it distinctly)."""
+    admin_user.failed_login_attempts += 1
+    just_locked = False
+    if admin_user.failed_login_attempts >= threshold:
+        admin_user.locked_until = datetime.now(UTC) + timedelta(minutes=lockout_minutes)
+        admin_user.failed_login_attempts = 0
+        just_locked = True
+    db.flush()
+    return just_locked
+
+
+def reset_failed_login(db: Session, admin_user: AdminUser) -> None:
+    admin_user.failed_login_attempts = 0
+    admin_user.locked_until = None
     db.flush()
