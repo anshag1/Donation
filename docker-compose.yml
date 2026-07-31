@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: donation_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: donation
+      POSTGRES_PASSWORD: donation
+      POSTGRES_DB: donation_dev
+    ports:
+      # Host port 5435 — 5432/5433/5434 are already used by other local
+      # projects on this machine (see `docker ps`); the container's internal
+      # port stays 5432 either way.
+      - "5435:5432"
+    volumes:
+      - donation_pg_data:/var/lib/postgresql/data
+      - ./infra/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U donation -d donation_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  donation_pg_data:
