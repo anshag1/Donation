@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     supabase_service_role_key: str = ""
     supabase_storage_bucket: str = ""
 
+    cloudflare_r2_account_id: str = ""
+    cloudflare_r2_access_key_id: str = ""
+    cloudflare_r2_secret_access_key: str = ""
+    cloudflare_r2_bucket: str = ""
+
     default_org_receipt_prefix: str = "DEMO"
 
     @property
@@ -51,6 +56,15 @@ class Settings(BaseSettings):
     @property
     def supabase_storage_configured(self) -> bool:
         return bool(self.supabase_url and self.supabase_service_role_key and self.supabase_storage_bucket)
+
+    @property
+    def r2_storage_configured(self) -> bool:
+        return bool(
+            self.cloudflare_r2_account_id
+            and self.cloudflare_r2_access_key_id
+            and self.cloudflare_r2_secret_access_key
+            and self.cloudflare_r2_bucket
+        )
 
     @property
     def is_test(self) -> bool:

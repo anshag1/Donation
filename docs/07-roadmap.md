@@ -42,7 +42,7 @@
 ### Milestone 2 — Receipts ✅ DONE
 - ReportLab PDF template — all required fields present (org name, receipt no., date, donor details, amount + words, purpose, payment/order IDs, signature line, thank-you message). Org logo/signature *images* deferred to the admin-dashboard pass (no upload UI exists yet to provide them).
 - Receipt numbering: per-org, per-financial-year, race-condition-safe under concurrency — proven by a test that fires 10 concurrent allocations across separate DB sessions and asserts a gap-free unique sequence.
-- Object storage: adapter pattern (`storage_service.py`) with a working `LocalFilesystemStorage` for dev and a `SupabaseStorage` implementation for production (untested against a real Supabase project — no credentials available in this environment).
+- Object storage: adapter pattern (`storage_service.py`) with a working `LocalFilesystemStorage` for dev, plus `SupabaseStorage` and `R2Storage` (Cloudflare R2 — this deployment's chosen production backend, see [docs/09-session-handoff.md](09-session-handoff.md)) implementations, both untested against a real account (no credentials available in this environment).
 - Resend email integration: real API call when `RESEND_API_KEY` is set, graceful no-op log otherwise.
 - **Exit criteria met**: proven via `scripts/simulate_webhook.py` — a donation reaches `success` with a downloadable, correctly-formatted PDF receipt within the same request cycle that processes the webhook.
 - **Bugs found and fixed while verifying this milestone** (see [08-local-development.md](08-local-development.md) and inline code comments): JWT `exp`/`iat` were encoded as ISO datetime strings instead of the numeric Unix timestamps PyJWT's own expiry check requires; `razorpay.Utility.verify_webhook_signature` was called unbound off the class instead of on an instance; Postgres rejects `FOR UPDATE` combined with an outer join, which the donation+payment lock query initially produced; ReportLab's base-14 Helvetica font has no glyph for the ₹ sign and silently rendered a missing-glyph box (fixed by using "Rs." in PDFs specifically, keeping ₹ on web/email).
@@ -68,9 +68,9 @@
 - Rate limiting on login (5/min/IP) and donation initiation (10/min/IP); refresh-token rotation now also revokes the exchanged token (closing a replay window the original design left open — see [06-deployment-security.md](06-deployment-security.md)).
 - **Exit criteria met**: 75 backend tests pass, including a dedicated security sweep with per-role denial assertions (not just "it compiles") and cross-org isolation tests that insert real data into a second organization and assert it's neither visible nor mutable from the first org's session.
 
-### Milestone 6 — Production Launch (Week 10–12)
+### Milestone 6 — Production Launch (Week 10–12) — NOT STARTED
 - Staging environment with Razorpay test mode fully rehearsed end-to-end.
-- Production deploy (Vercel + Render/Railway + Supabase), custom domain, monitoring/alerting (Sentry, uptime).
+- Production deploy — **Cloudflare Pages** (frontend), **Render** (backend), **Supabase** (Postgres only), **Cloudflare R2** (receipt storage) — decided, not yet connected. Custom domain, monitoring/alerting (Sentry, uptime) not yet set up.
 - Go-live with real organization, first live donation reconciled manually against Razorpay dashboard.
 - **Exit criteria**: First real donor payment processed, receipt received, and reconciled correctly in production.
 

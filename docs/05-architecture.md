@@ -2,23 +2,28 @@
 
 ## 5.1 System Architecture Overview
 
+**Chosen for this deployment** (see [docs/09-session-handoff.md](09-session-handoff.md) §2): Cloudflare Pages (frontend), Render (backend), Supabase (Postgres only), Cloudflare R2 (object storage) — not Supabase Storage. None of this is connected/live yet.
+
 ```mermaid
 flowchart TB
     subgraph Client
         Browser[Donor / Admin Browser]
     end
 
-    subgraph Vercel["Vercel (Frontend)"]
+    subgraph Pages["Cloudflare Pages (Frontend)"]
         NextJS[Next.js App<br/>Public site + Admin dashboard]
     end
 
-    subgraph RenderRailway["Render / Railway (Backend)"]
+    subgraph RenderP["Render (Backend)"]
         API[FastAPI Service]
         Worker[Background Tasks<br/>PDF render + email dispatch]
     end
 
     subgraph Supabase["Supabase"]
-        PG[(PostgreSQL)]
+        PG[(PostgreSQL only)]
+    end
+
+    subgraph R2["Cloudflare R2"]
         Storage[(Object Storage<br/>receipts, banners, logos)]
     end
 
@@ -107,7 +112,9 @@ backend/
 │   │
 │   ├── services/                     ✅ donation_service, payment_service (Razorpay),
 │   │   │                                webhook_service, receipt_service, auth_service, audit_service,
-│   │   │                                email_service (Resend), storage_service (Local/Supabase),
+│   │   │                                email_service (Resend), storage_service (Local/R2/Supabase —
+│   │   │                                  R2 is this deployment's chosen backend, untested against a
+│   │   │                                  real bucket; see docs/09-session-handoff.md),
 │   │   │                                amount_in_words.py, format_utils.py
 │   │   ├── pdf/receipt_pdf.py         ✅ ReportLab template
 │   │   └── pdf/report_pdf.py          ○ summary reports (with export_service.py) — CSV export ✅ lives in the reports router directly, no separate service needed for that

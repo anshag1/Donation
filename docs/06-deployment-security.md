@@ -2,6 +2,8 @@
 
 ## 6.1 Deployment Architecture
 
+**Chosen for this deployment** (see [docs/09-session-handoff.md](09-session-handoff.md) §2 — none of this is connected/live yet): Cloudflare Pages (frontend), Render (backend), Supabase (Postgres only), Cloudflare R2 (receipt PDF storage). The diagram below reflects this; earlier drafts of this doc mentioned Vercel/Railway/Supabase-Storage as generic options — superseded.
+
 ```mermaid
 flowchart LR
     subgraph Dev["Local Dev"]
@@ -17,29 +19,31 @@ flowchart LR
     end
 
     subgraph Prod["Production"]
-        VercelP[Vercel<br/>Next.js — Edge/CDN]
-        RenderP[Render or Railway<br/>FastAPI container]
-        SupabaseP[Supabase<br/>Postgres + Storage]
+        PagesP[Cloudflare Pages<br/>Next.js]
+        RenderP[Render<br/>FastAPI container]
+        SupabaseP[Supabase<br/>Postgres only]
+        R2P[Cloudflare R2<br/>Receipt PDFs]
         RazorpayP[Razorpay Live]
         ResendP[Resend]
     end
 
     Dev -->|git push| CI
-    CI -->|main branch, checks pass| VercelP
+    CI -->|main branch, checks pass| PagesP
     CI -->|main branch, checks pass| RenderP
     RenderP <--> SupabaseP
-    VercelP <--> RenderP
+    RenderP <--> R2P
+    PagesP <--> RenderP
     RenderP <--> RazorpayP
     RenderP <--> ResendP
 ```
 
 - **Environments**: `local` → `staging` → `production`. Staging uses Razorpay **test mode** keys and a separate Supabase project/branch.
-- **Frontend (Vercel)**: automatic preview deployments per PR; production deploy on merge to `main`. Environment variables (API base URL) set per-environment in Vercel dashboard. No auth-provider config to set here — auth is native FastAPI JWT (see [05-architecture.md](05-architecture.md)), not a third-party provider.
-- **Backend (Render/Railway)**: Dockerized FastAPI, health check endpoint (`/healthz`) for zero-downtime deploys, auto-deploy on `main` push after CI passes. Horizontal scaling: stateless app instances behind the platform's load balancer (no in-memory session state — sessions are JWT/DB-backed).
-- **Database (Supabase Postgres)**: automated daily backups (Supabase built-in), point-in-time recovery on paid tier, connection pooling via Supabase's PgBouncer for serverless-friendly connection counts.
-- **Object Storage**: Supabase Storage buckets — `receipts` (private, signed-URL access only), `branding` (public-read, for logos/banners).
-- **Secrets management**: platform-native env var stores (Vercel/Render/Railway secrets) for v1; documented as a straightforward swap to a dedicated secret manager (e.g. Doppler, AWS Secrets Manager) if/when multi-org scaling warrants it.
-- **DNS/TLS**: TLS terminated at Vercel/Render edge by default; custom domain + managed cert when the org's own domain is attached.
+- **Frontend (Cloudflare Pages)**: automatic preview deployments per PR; production deploy on merge to `main`. Environment variables (API base URL) set per-environment in the Cloudflare dashboard. No auth-provider config to set here — auth is native FastAPI JWT (see [05-architecture.md](05-architecture.md)), not a third-party provider. Standard Next.js (App Router, Server Components) needs Cloudflare's Next.js adapter for Pages — not yet set up, do this before first deploy.
+- **Backend (Render)**: Dockerized FastAPI (`backend/Dockerfile`, builds/runs correctly — verified locally), health check endpoint (`/healthz`) for zero-downtime deploys, auto-deploy on `main` push after CI passes.
+- **Database (Supabase Postgres only — not Supabase Storage)**: connect via Supabase's **Session Pooler** connection string (port 5432, IPv4-compatible), not "Direct connection" (IPv6-only unless paying for an add-on — Render is IPv4). Automated daily backups (Supabase built-in), point-in-time recovery on paid tier.
+- **Object Storage (Cloudflare R2)**: `R2Storage` in `app/services/storage_service.py` — S3-compatible, boto3-based, presigned URLs via `generate_presigned_url`. Chosen over Supabase Storage for zero egress fees and to avoid a cross-cloud hop from the Cloudflare-hosted frontend. Bucket kept **private** (receipts contain PAN/mobile numbers) — never expose the R2 access keys to the frontend, backend-only. **Not yet tested against a real R2 bucket** — verify with `backend/scripts/simulate_webhook.py` the moment real credentials are added.
+- **Secrets management**: platform-native env var stores (Cloudflare/Render secrets) for v1; documented as a straightforward swap to a dedicated secret manager (e.g. Doppler, AWS Secrets Manager) if/when multi-org scaling warrants it.
+- **DNS/TLS**: TLS terminated at Cloudflare/Render edge by default; custom domain + managed cert when the org's own domain is attached.
 
 ## 6.2 CI/CD Pipeline
 
@@ -83,7 +87,7 @@ Everything below is implemented and covered by `tests/integration/test_auth_flow
 - ○ CAPTCHA/Turnstile on the public donation form — kept out of v1 by default to minimize donor friction; add if abuse patterns are observed.
 
 ### Data Protection
-- TLS enforced end-to-end (browser↔Vercel, Vercel↔Render, Render↔Supabase — all HTTPS/SSL) — applies once actually deployed; not yet deployed anywhere (see [07-roadmap.md](07-roadmap.md)).
+- TLS enforced end-to-end (browser↔Cloudflare Pages, Pages↔Render, Render↔Supabase, Render↔R2 — all HTTPS/SSL) — applies once actually deployed; not yet deployed anywhere (see [07-roadmap.md](07-roadmap.md)).
 - PII (PAN, address, mobile) — Supabase Postgres encryption-at-rest (platform-level); consider column-level encryption for PAN specifically if compliance requirements tighten.
 - Signed, short-expiry URLs for receipt PDF downloads via `SupabaseStorage.get_signed_url()` when Supabase is configured; `LocalFilesystemStorage` (local dev, no Supabase credentials) instead serves from `GET /receipts/local-file/{key}` with no signature — acceptable for local-only dev, would need real signing before ever pointing at a public deployment.
 - ○ The public `GET /receipts/{number}/download` endpoint itself doesn't yet require a signed token or mobile-verification param (see [04-api-specification.md](04-api-specification.md) §4.1) — reachable by receipt number alone, which is sequential/low-entropy. Tracked as a concrete hardening item, not silently dropped.
