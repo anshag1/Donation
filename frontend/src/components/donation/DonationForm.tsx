@@ -12,11 +12,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AmountPicker } from "@/components/donation/AmountPicker";
 import { apiClient, ApiError } from "@/lib/api-client";
 import { formatInrFromPaise } from "@/lib/format";
-import { openRazorpayCheckout } from "@/lib/razorpay";
+import { openRazorpayCheckout, UPI_FIRST_CHECKOUT_CONFIG } from "@/lib/razorpay";
 import type { DonationInitiateResponse, PublicEvent } from "@/types/api";
+
+const GENERAL_FUND_VALUE = "__general_fund__";
 
 const MIN_AMOUNT_IN_PAISE = 100;
 const MAX_AMOUNT_IN_PAISE = 10_000_000_00;
@@ -45,15 +48,22 @@ type DonorFormValues = z.infer<typeof donorSchema>;
 
 interface DonationFormProps {
   event?: PublicEvent;
+  /** Active events to choose from on the general (non-event-specific) donation
+   * page. Ignored when `event` is already set — that page is locked to the
+   * event the donor arrived via, same as before. */
+  events?: PublicEvent[];
   organizationName?: string;
 }
 
-export function DonationForm({ event, organizationName = "Our Organization" }: DonationFormProps) {
+export function DonationForm({ event, events = [], organizationName = "Our Organization" }: DonationFormProps) {
   const router = useRouter();
   const [amountInPaise, setAmountInPaise] = useState<number | null>(null);
   const [customAmountInput, setCustomAmountInput] = useState("");
   const [amountError, setAmountError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [selectedEventId, setSelectedEventId] = useState(GENERAL_FUND_VALUE);
+
+  const selectedEvent = event ?? events.find((e) => e.id === selectedEventId);
 
   const {
     register,
@@ -79,7 +89,7 @@ export function DonationForm({ event, organizationName = "Our Organization" }: D
       const initiateResponse = await apiClient.post<DonationInitiateResponse>(
         "/api/v1/donations/initiate",
         {
-          event_id: event?.id ?? null,
+          event_id: selectedEvent?.id ?? null,
           donor: {
             full_name: donor.full_name,
             mobile_number: donor.mobile_number,
@@ -88,7 +98,7 @@ export function DonationForm({ event, organizationName = "Our Organization" }: D
             address: donor.address || undefined,
           },
           amount_in_paise: amountInPaise,
-          purpose: event?.title,
+          purpose: selectedEvent?.title,
         },
       );
 
@@ -98,13 +108,14 @@ export function DonationForm({ event, organizationName = "Our Organization" }: D
         amount: initiateResponse.amount_in_paise,
         currency: initiateResponse.currency,
         name: organizationName,
-        description: event?.title ?? "Donation",
+        description: selectedEvent?.title ?? "Donation",
         prefill: {
           name: donor.full_name,
           contact: donor.mobile_number,
           email: donor.email,
         },
         theme: { color: "#4338ca" },
+        config: UPI_FIRST_CHECKOUT_CONFIG,
         handler: (response) => {
           apiClient
             .post("/api/v1/donations/" + initiateResponse.donation_id + "/client-callback", {
@@ -138,6 +149,25 @@ export function DonationForm({ event, organizationName = "Our Organization" }: D
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-6" noValidate>
+      {!event && events.length > 0 && (
+        <div className="space-y-1.5">
+          <Label className="text-base">Which cause would you like to support?</Label>
+          <Select value={selectedEventId} onValueChange={setSelectedEventId}>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={GENERAL_FUND_VALUE}>General fund — wherever it&apos;s needed most</SelectItem>
+              {events.map((e) => (
+                <SelectItem key={e.id} value={e.id}>
+                  {e.title}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
       <div className="space-y-3">
         <Label className="text-base">Choose an amount</Label>
         <AmountPicker

@@ -35,7 +35,7 @@ def initiate_donation(
         event_id=event.id if event else None,
         amount_in_paise=request.amount_in_paise,
         currency="INR",
-        purpose=request.purpose or (event.title if event else None),
+        purpose=request.purpose or (event.title if event else "General Donation"),
         donor_snapshot_json=request.donor.model_dump(mode="json"),
     )
 

@@ -214,6 +214,26 @@ export async function acceptInvite(token: string, password: string): Promise<voi
   await unwrapEnvelope<null>(response);
 }
 
+/** Always resolves (the backend returns the same success response whether
+ * or not the email is registered, to avoid leaking which admin accounts
+ * exist) — the caller should show a generic "check your email" message
+ * regardless of the outcome. */
+export async function forgotPassword(email: string): Promise<void> {
+  const response = await rawRequest("/api/v1/auth/forgot-password", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+  await unwrapEnvelope<null>(response);
+}
+
+export async function resetPassword(token: string, password: string): Promise<void> {
+  const response = await rawRequest("/api/v1/auth/reset-password", {
+    method: "POST",
+    body: JSON.stringify({ token, password }),
+  });
+  await unwrapEnvelope<null>(response);
+}
+
 export function setup2fa(): Promise<TwoFactorSetup> {
   return adminApiClient.post<TwoFactorSetup>("/api/v1/auth/2fa/setup");
 }

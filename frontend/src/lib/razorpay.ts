@@ -28,7 +28,30 @@ export interface RazorpayOptions {
   theme?: { color?: string };
   handler: (response: RazorpaySuccessResponse) => void;
   modal?: { ondismiss?: () => void };
+  config?: {
+    display: {
+      blocks: Record<string, { name: string; instruments: Array<{ method: string }> }>;
+      sequence: string[];
+      preferences: { show_default_blocks: boolean };
+    };
+  };
 }
+
+/** Surfaces UPI as its own entry in the Checkout sidebar, ahead of the
+ * default blocks (cards, netbanking, wallet, pay later), which still show
+ * because show_default_blocks stays true. */
+export const UPI_FIRST_CHECKOUT_CONFIG: RazorpayOptions["config"] = {
+  display: {
+    blocks: {
+      upi: {
+        name: "Pay by UPI",
+        instruments: [{ method: "upi" }],
+      },
+    },
+    sequence: ["block.upi"],
+    preferences: { show_default_blocks: true },
+  },
+};
 
 let scriptLoadPromise: Promise<void> | null = null;
 

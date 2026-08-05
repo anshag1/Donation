@@ -51,6 +51,15 @@ class AcceptInviteRequest(BaseModel):
     password: str = Field(min_length=10, max_length=200)
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    password: str = Field(min_length=10, max_length=200)
+
+
 class AdminUserUpdateRequest(BaseModel):
     full_name: str | None = Field(default=None, min_length=2, max_length=200)
     roles: list[str] | None = None

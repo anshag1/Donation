@@ -25,6 +25,8 @@ class AdminUser(Base, UUIDPKMixin, TimestampMixin):
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     invite_token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     invite_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    password_reset_token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    password_reset_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     role_links: Mapped[list["AdminUserRole"]] = relationship(  # noqa: F821
         back_populates="admin_user", cascade="all, delete-orphan"

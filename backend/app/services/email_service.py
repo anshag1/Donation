@@ -104,6 +104,51 @@ def send_admin_invite_email(
     return True
 
 
+def send_password_reset_email(
+    settings: Settings, *, to_email: str, full_name: str, reset_url: str
+) -> bool:
+    """Returns True if the email was actually dispatched to Resend.
+
+    Unlike `send_admin_invite_email` above, there is NO API-response fallback
+    here: `POST /auth/forgot-password` is called anonymously by whoever is
+    trying to recover the account, not by an already-authenticated
+    super_admin, so returning the reset link in the response would let
+    anyone request a password reset for any email and get the takeover
+    credential back directly — the exact bug class the invite-email logging
+    fix (see docs/09-session-handoff.md) closed, reintroduced via a
+    different channel. When Resend isn't configured, this logs only that a
+    reset was requested — never the token/URL — so local-dev testing of this
+    flow requires either a real Resend key or monkeypatching this function
+    directly (see tests/integration/test_password_reset.py)."""
+    if not settings.resend_configured:
+        logger.info(
+            "RESEND_API_KEY not set — skipping real send. A password reset "
+            "was requested for %s (%s); no email sent.",
+            to_email,
+            full_name,
+        )
+        return False
+
+    resend.api_key = settings.resend_api_key
+    resend.Emails.send(
+        {
+            "from": settings.resend_from_email,
+            "to": [to_email],
+            "subject": "Reset your donation platform admin password",
+            "html": f"""
+            <div style="font-family: Inter, Arial, sans-serif; max-width: 480px; margin: 0 auto;">
+              <h2 style="color:#3730a3;">Password reset requested</h2>
+              <p>Hi {full_name}, we received a request to reset your admin password.</p>
+              <p><a href="{reset_url}" style="color:#3730a3;">Click here to set a new password</a></p>
+              <p style="color:#64748b; font-size: 13px;">This link expires in 1 hour. If you didn't
+              request this, you can safely ignore this email — your password won't change.</p>
+            </div>
+            """,
+        }
+    )
+    return True
+
+
 def _render_email_html(
     *, donor_name: str, receipt_number: str, amount_display: str, organization_name: str
 ) -> str:

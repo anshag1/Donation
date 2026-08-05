@@ -9,7 +9,7 @@ from app.core.rate_limit import limiter
 from app.core.security import hash_password
 from app.deps import CurrentAdmin, CurrentAdminDep, DbDep
 from app.repositories import admin_user_repo
-from app.schemas.admin_user import AcceptInviteRequest
+from app.schemas.admin_user import AcceptInviteRequest, ForgotPasswordRequest, ResetPasswordRequest
 from app.schemas.auth import (
     CurrentAdminOut,
     LoginRequest,
@@ -20,7 +20,7 @@ from app.schemas.auth import (
     TwoFactorSetupResponse,
 )
 from app.schemas.common import ApiResponse
-from app.services import audit_service, auth_service, totp_service
+from app.services import audit_service, auth_service, email_service, totp_service
 
 router = APIRouter(prefix="/auth", tags=["admin:auth"])
 
@@ -107,6 +107,63 @@ def accept_invite(request: Request, body: AcceptInviteRequest, db: Session = DbD
         organization_id=admin_user.organization_id,
         actor_admin_user_id=admin_user.id,
         action="admin_invite_accepted",
+        entity_type="admin_user",
+        entity_id=admin_user.id,
+        ip_address=request.client.host if request.client else None,
+    )
+    db.commit()
+    return ApiResponse(data=None)
+
+
+@router.post("/forgot-password", response_model=ApiResponse[None])
+@limiter.limit("5/minute")
+def forgot_password(request: Request, body: ForgotPasswordRequest, db: Session = DbDep) -> ApiResponse[None]:
+    """Public by design. Always returns the same response whether or not the
+    email is registered — this can't be used to enumerate admin accounts. If
+    the email matches an active account, a single-use reset token is
+    generated and emailed (never returned in this response, unlike
+    /admin/users' invite flow — see email_service.send_password_reset_email
+    for why that distinction matters here)."""
+    settings = get_settings()
+    admin_user = admin_user_repo.get_by_email(db, body.email)
+    if admin_user is not None and admin_user.is_active:
+        raw_token = admin_user_repo.set_password_reset_token(db, admin_user)
+        reset_url = f"{settings.frontend_origin.rstrip('/')}/admin/reset-password?token={raw_token}"
+        email_service.send_password_reset_email(
+            settings, to_email=admin_user.email, full_name=admin_user.full_name, reset_url=reset_url
+        )
+        audit_service.record(
+            db,
+            organization_id=admin_user.organization_id,
+            actor_admin_user_id=None,
+            action="admin_password_reset_requested",
+            entity_type="admin_user",
+            entity_id=admin_user.id,
+            ip_address=request.client.host if request.client else None,
+        )
+        db.commit()
+    return ApiResponse(data=None)
+
+
+@router.post("/reset-password", response_model=ApiResponse[None])
+@limiter.limit("5/minute")
+def reset_password(request: Request, body: ResetPasswordRequest, db: Session = DbDep) -> ApiResponse[None]:
+    """Public by design — same reasoning as accept_invite above: same
+    generic error whether the token is unknown, already used, or expired."""
+    admin_user = admin_user_repo.get_by_password_reset_token(db, body.token)
+    if (
+        admin_user is None
+        or admin_user.password_reset_expires_at is None
+        or admin_user.password_reset_expires_at < datetime.now(UTC)
+    ):
+        raise UnauthorizedError("This password reset link is invalid or has expired")
+
+    admin_user_repo.reset_password(db, admin_user, new_password_hash=hash_password(body.password))
+    audit_service.record(
+        db,
+        organization_id=admin_user.organization_id,
+        actor_admin_user_id=admin_user.id,
+        action="admin_password_reset",
         entity_type="admin_user",
         entity_id=admin_user.id,
         ip_address=request.client.host if request.client else None,

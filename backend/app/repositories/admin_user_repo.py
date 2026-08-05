@@ -14,9 +14,10 @@ from app.models.role import Role
 from app.schemas.admin_user import AdminUserCreateRequest, AdminUserUpdateRequest
 
 INVITE_TOKEN_EXPIRE_DAYS = 7
+PASSWORD_RESET_TOKEN_EXPIRE_MINUTES = 60
 
 
-def _hash_invite_token(raw_token: str) -> str:
+def _hash_token(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
 
@@ -92,7 +93,7 @@ def create(db: Session, organization_id: uuid.UUID, request: AdminUserCreateRequ
         email=request.email.lower(),
         password_hash=hash_password(secrets.token_urlsafe(32)),
         full_name=request.full_name,
-        invite_token_hash=_hash_invite_token(raw_invite_token),
+        invite_token_hash=_hash_token(raw_invite_token),
         invite_expires_at=datetime.now(UTC) + timedelta(days=INVITE_TOKEN_EXPIRE_DAYS),
     )
     db.add(admin_user)
@@ -105,7 +106,7 @@ def create(db: Session, organization_id: uuid.UUID, request: AdminUserCreateRequ
 
 
 def get_by_invite_token(db: Session, raw_token: str) -> AdminUser | None:
-    token_hash = _hash_invite_token(raw_token)
+    token_hash = _hash_token(raw_token)
     stmt = select(AdminUser).where(AdminUser.invite_token_hash == token_hash)
     return db.execute(stmt).scalar_one_or_none()
 
@@ -115,6 +116,39 @@ def accept_invite(db: Session, admin_user: AdminUser, *, new_password_hash: str)
     admin_user.invite_token_hash = None
     admin_user.invite_expires_at = None
     admin_user.is_active = True
+    db.flush()
+
+
+def set_password_reset_token(db: Session, admin_user: AdminUser) -> str:
+    """Generates a fresh single-use reset token, overwriting any previous
+    unused one for this account (only the most recently requested link ever
+    works). Returns the raw token — only its SHA-256 hash is persisted, same
+    discipline as the invite token above."""
+    raw_token = secrets.token_urlsafe(32)
+    admin_user.password_reset_token_hash = _hash_token(raw_token)
+    admin_user.password_reset_expires_at = datetime.now(UTC) + timedelta(
+        minutes=PASSWORD_RESET_TOKEN_EXPIRE_MINUTES
+    )
+    db.flush()
+    return raw_token
+
+
+def get_by_password_reset_token(db: Session, raw_token: str) -> AdminUser | None:
+    token_hash = _hash_token(raw_token)
+    stmt = select(AdminUser).where(AdminUser.password_reset_token_hash == token_hash)
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def reset_password(db: Session, admin_user: AdminUser, *, new_password_hash: str) -> None:
+    """Sets a new password and clears the reset token (single-use) — also
+    clears any active account lockout, since successfully proving control of
+    the registered email is itself a strong identity check, and there's no
+    other self-service way to recover from a lockout today."""
+    admin_user.password_hash = new_password_hash
+    admin_user.password_reset_token_hash = None
+    admin_user.password_reset_expires_at = None
+    admin_user.failed_login_attempts = 0
+    admin_user.locked_until = None
     db.flush()
 
 

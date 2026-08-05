@@ -89,6 +89,8 @@ Native FastAPI JWT (see [05-architecture.md](05-architecture.md) for why this su
 - ✅ `POST /auth/2fa/enable` — `{code}`, must match the secret from `/2fa/setup`; only then flips `two_factor_enabled`.
 - ✅ `POST /auth/2fa/disable` — `{code}`, must match the currently-enabled secret.
 - ✅ `POST /auth/accept-invite` — **public, unauthenticated by design** (a newly-invited admin has no session yet). `{token, password}`; `token` comes from the invite link created by `POST /admin/users` below. Rate limited 5/min/IP. Same generic 401 whether the token is unknown, already used, or expired.
+- ✅ `POST /auth/forgot-password` — **public, unauthenticated by design**. `{email}` → always returns the same success response whether or not the email is registered (no account enumeration). If it matches an active account, generates a single-use, hashed, 1-hour-expiry reset token and emails a reset link via Resend (or logs only that a reset was requested — never the token/URL — when Resend isn't configured; unlike the invite flow, this response never contains the token either, since the caller here is anonymous, not an already-authenticated super_admin). Rate limited 5/min/IP. Requesting again invalidates any previous unused token.
+- ✅ `POST /auth/reset-password` — **public, unauthenticated by design**. `{token, password}`; `token` comes from the reset link. Sets a new password, clears the reset token (single-use), and **also clears any active account lockout** — successfully proving control of the registered email is itself a strong identity check, and it's currently the only self-service way to recover from a lockout. Rate limited 5/min/IP. Same generic 401 whether the token is unknown, already used, or expired.
 
 ### Dashboard ✅
 - `GET /admin/dashboard/summary` *(any authenticated role)* → today/week/month/year/all-time totals (successful donations only), total count, and the 10 most recent donations.
@@ -149,7 +151,7 @@ Native FastAPI JWT (see [05-architecture.md](05-architecture.md) for why this su
 |---|---|---|
 | `POST /donations/initiate` | 10 / min / IP | ✅ implemented |
 | `POST /donations/initiate` | 10 / hour / donor mobile number | ✅ implemented — independent of the IP limit above |
-| `POST /auth/login`, `/auth/login/verify-2fa`, `/auth/accept-invite` | 5 / min / IP | ✅ implemented |
+| `POST /auth/login`, `/auth/login/verify-2fa`, `/auth/accept-invite`, `/auth/forgot-password`, `/auth/reset-password` | 5 / min / IP | ✅ implemented |
 | Account lockout | 15 min after 5 consecutive failed logins (password or TOTP) | ✅ implemented — per-account, independent of the per-IP limits above |
 | `POST /webhooks/razorpay` | Not rate-limited (signature verification is the control) | as designed |
 | Source-IP allowlisting on the webhook; 100/min/user on other admin endpoints | — | ○ not yet implemented |
